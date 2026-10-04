@@ -4,15 +4,18 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "build:all": "npm run build && npm run backend:build",
-    "lint": "oxlint",
-    "preview": "vite preview",
-    "backend:dev": "tsx watch backend/src/server.ts",
-    "backend:build": "tsc -p backend/tsconfig.json",
-    "backend:test": "vitest run backend/tests",
-    "backend:seed": "tsx backend/src/seed.ts"
+    "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build": "npm --prefix frontend run build && npm --prefix backend run build",
+    "build:all": "npm run build",
+    "lint": "npm --prefix frontend run lint",
+    "preview": "npm --prefix frontend run preview",
+    "backend:dev": "npm --prefix backend run dev",
+    "backend:build": "npm --prefix backend run build",
+    "backend:test": "npm --prefix backend run test",
+    "backend:db:check": "npm --prefix backend run db:check",
+    "backend:seed": "npm --prefix backend run seed"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

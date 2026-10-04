@@ -15,7 +15,22 @@ import { HttpError } from './utils/http.js'
 export const app = express()
 app.set('trust proxy', 1)
 app.use(helmet())
-app.use(cors({ origin: env.CLIENT_URL, credentials: true }))
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true)
+    try {
+      const url = new URL(origin)
+      const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(url.hostname) || url.hostname.endsWith('.localhost')
+      if (origin === env.CLIENT_URL || isLocalhost) return callback(null, true)
+    } catch {
+      // fall through to the default rejection below
+    }
+    callback(new Error(`Origin not allowed by CORS: ${origin}`))
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}))
 app.use(express.json({ limit: '100kb' }))
 app.use(cookieParser())
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }))

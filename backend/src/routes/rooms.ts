@@ -15,14 +15,15 @@ const roomCode = () => randomBytes(4).toString('hex').toUpperCase()
 
 router.use(requireAuth)
 router.get('/', asyncHandler(async (req, res) => {
-  const memberships = await Membership.find({ userId: req.userId, status: { $in: ['active', 'left'] } }).populate('roomId')
+  const memberships = await Membership.find({ userId: req.userId, status: { $in: ['pending', 'active', 'left'] } }).populate('roomId')
   ok(res, { rooms: memberships })
 }))
 
 router.post('/', asyncHandler(async (req, res) => {
   const input = roomSchema.safeParse(req.body)
   if (!input.success) throw new HttpError(400, 'INVALID_ROOM', 'Please provide a room name and a valid recovery password.')
-  const publicId = roomCode()
+  let publicId = roomCode()
+  while (await Room.exists({ publicId })) publicId = roomCode()
   const recoveryPasswordHash = input.data.recoveryPassword ? await bcrypt.hash(input.data.recoveryPassword, 12) : undefined
   const room = await Room.create({ publicId, name: input.data.name, createdBy: req.userId, adminId: req.userId, recoveryPasswordHash })
   await Membership.create({ roomId: room._id, userId: req.userId, role: 'admin', status: 'active', joinedAt: new Date() })

@@ -6,6 +6,9 @@ export async function connectDatabase() {
 	await connection.connection.collection('users').dropIndex('email_1').catch((error: { codeName?: string }) => {
 		if (error.codeName !== 'IndexNotFound') throw error
 	})
+	await connection.connection.collection('rooms').dropIndex('joinCode_1').catch((error: { codeName?: string }) => {
+		if (error.codeName !== 'IndexNotFound') throw error
+	})
 	return connection
 }
 export const disconnectDatabase = () => mongoose.disconnect()

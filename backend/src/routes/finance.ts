@@ -8,7 +8,7 @@ import { calculateNetBalances, simplifyBalances } from '../services/balanceServi
 import { asyncHandler, ok } from '../utils/http.js'
 
 const router = Router()
-router.use(requireAuth, getRoomForMember)
+router.use(requireAuth)
 
 async function roomFinance(roomId: string) {
   const [expenses, payments] = await Promise.all([Expense.find({ roomId }), Payment.find({ roomId })])
@@ -18,10 +18,10 @@ async function roomFinance(roomId: string) {
   return { expenses, payments, balances, suggestions: simplifyBalances(balances) }
 }
 
-router.get('/rooms/:roomId/balances', asyncHandler(async (req, res) => { const finance = await roomFinance(res.locals.room._id.toString()); ok(res, finance) }))
-router.get('/rooms/:roomId/suggestions', asyncHandler(async (req, res) => { const finance = await roomFinance(res.locals.room._id.toString()); ok(res, { suggestions: finance.suggestions }) }))
-router.get('/rooms/:roomId/activity', asyncHandler(async (_req, res) => { const events = await AuditEvent.find({ roomId: res.locals.room._id }).sort({ createdAt: -1 }).limit(100).populate('actorId', 'displayName'); ok(res, { events }) }))
-router.get('/rooms/:roomId/summary', asyncHandler(async (req, res) => {
+router.get('/rooms/:roomId/balances', getRoomForMember, asyncHandler(async (_req, res) => { const finance = await roomFinance(res.locals.room._id.toString()); ok(res, finance) }))
+router.get('/rooms/:roomId/suggestions', getRoomForMember, asyncHandler(async (_req, res) => { const finance = await roomFinance(res.locals.room._id.toString()); ok(res, { suggestions: finance.suggestions }) }))
+router.get('/rooms/:roomId/activity', getRoomForMember, asyncHandler(async (_req, res) => { const events = await AuditEvent.find({ roomId: res.locals.room._id }).sort({ createdAt: -1 }).limit(100).populate('actorId', 'displayName'); ok(res, { events }) }))
+router.get('/rooms/:roomId/summary', getRoomForMember, asyncHandler(async (req, res) => {
   const finance = await roomFinance(res.locals.room._id.toString())
   const month = String(req.query.month ?? new Date().toISOString().slice(0, 7))
   const start = new Date(`${month}-01T00:00:00.000Z`); const end = new Date(start); end.setUTCMonth(end.getUTCMonth() + 1)

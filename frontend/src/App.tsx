@@ -54,25 +54,26 @@ function App() {
   const [activity, setActivity] = useState<ApiActivity[]>([])
   const [summary, setSummary] = useState<ApiSummary>({ month: '', roomSpentPaise: 1845000, youPaidPaise: 620000, yourSharePaise: 485000, paidForOthersPaise: 135000 })
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([])
-  const [authStatus, setAuthStatus] = useState<'checking' | 'loggedOut' | 'ready'>(apiIsConfigured ? 'checking' : 'loggedOut')
+  const [authStatus, setAuthStatus] = useState<'checking' | 'entry' | 'ready'>(apiIsConfigured ? 'checking' : 'entry')
   const [loginError, setLoginError] = useState('')
+  const [pendingRoomName, setPendingRoomName] = useState('')
 
   useEffect(() => {
     if (!apiIsConfigured) return
-    void getCurrentUser().then((session) => { setCurrentUserId(session.user.id); setAuthStatus('ready') }).catch(() => setAuthStatus('loggedOut'))
+    void getCurrentUser().then((session) => { setCurrentUserId(session.user.id); setAuthStatus('ready') }).catch(() => setAuthStatus('entry'))
   }, [])
 
   useEffect(() => {
     if (!apiIsConfigured || authStatus !== 'ready') return
     void (async () => {
       try {
-        const session = await ensureSession('Akshay')
-        setCurrentUserId(session.user.id)
         const rooms = await listRooms()
-        let activeRoom = rooms.rooms.find((item) => item.status === 'active')
+        const activeRoom = rooms.rooms.find((item) => item.status === 'active')
+        const pendingRoom = rooms.rooms.find((item) => item.status === 'pending')
         if (!activeRoom) {
-          const created = await createRoom('Green Park Flat')
-          activeRoom = { roomId: created.room, role: 'admin', status: 'active' }
+          setPendingRoomName(pendingRoom?.roomId.name ?? '')
+          setAuthStatus('entry')
+          return
         }
         const roomId = activeRoom.roomId.publicId
         setRoomContext({ id: roomId, name: activeRoom.roomId.name })
@@ -81,45 +82,68 @@ function App() {
         setActivity(loadedActivity.events)
         const loadedMembers = room.members.map((member) => ({ id: member.userId._id, name: member.userId.displayName, role: member.role, status: member.status }))
         setRoomMembers(loadedMembers)
-        if (loadedMembers.find((member) => member.id === session.user.id)?.role === 'admin') {
+        if (loadedMembers.find((member) => member.id === currentUserId)?.role === 'admin') {
           try { const requests = await listJoinRequests(roomId); setJoinRequests(requests.requests.map((request) => ({ id: request._id, name: request.userId.displayName }))) } catch { setJoinRequests([]) }
         }
         const memberName = new Map(loadedMembers.map((member) => [member.id, member.name]))
-        const outgoing = balance.suggestions.filter((suggestion) => suggestion.fromUserId === session.user.id)
+        const outgoing = balance.suggestions.filter((suggestion) => suggestion.fromUserId === currentUserId)
         setNeedToPay(outgoing.map((suggestion) => [memberName.get(suggestion.toUserId) ?? 'Roommate', suggestion.amountPaise / 100]))
         if (outgoing[0]) setPaymentTarget({ id: outgoing[0].toUserId, name: memberName.get(outgoing[0].toUserId) ?? 'Roommate', amount: outgoing[0].amountPaise / 100 })
-        setNeedToReceive(balance.suggestions.filter((suggestion) => suggestion.toUserId === session.user.id).map((suggestion) => [memberName.get(suggestion.fromUserId) ?? 'Roommate', suggestion.amountPaise / 100]))
+        setNeedToReceive(balance.suggestions.filter((suggestion) => suggestion.toUserId === currentUserId).map((suggestion) => [memberName.get(suggestion.fromUserId) ?? 'Roommate', suggestion.amountPaise / 100]))
         setExpenses(result.expenses.filter((expense) => !expense.voidedAt).map(toUiExpense))
       } catch (error) {
         if (error instanceof ApiError && error.code === 'ROOM_ACCESS_DENIED') {
           await logout().catch(() => undefined)
-          setLoginError('Your previous room session is no longer active. Please sign in again.')
-          setAuthStatus('loggedOut')
+          setLoginError('Your previous room session is no longer active. Please choose a room again.')
+          setAuthStatus('entry')
         } else showToast('We could not load your room.')
       }
     })()
-  }, [authStatus])
+  }, [authStatus, currentUserId])
 
   function showToast(message: string) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
   }
 
-  const login = async (displayName: string) => {
+  const enterRoom = async (mode: 'create' | 'join', displayName: string, roomNameOrId: string) => {
     setLoginError('')
-    if (!apiIsConfigured) {
-      setCurrentUserId('mock-0')
-      setAuthStatus('ready')
+    const trimmedDisplayName = displayName.trim()
+    const trimmedRoomValue = roomNameOrId.trim()
+    if (!trimmedDisplayName || !trimmedRoomValue) {
+      setLoginError(mode === 'create' ? 'Please enter your name and a room name.' : 'Please enter your name and a room ID.')
       return
     }
     try {
-      const session = await ensureSession(displayName)
+      if (!apiIsConfigured) {
+        setCurrentUserId('mock-0')
+        if (mode === 'create') setRoomContext({ id: 'GP7K29', name: trimmedRoomValue })
+        setAuthStatus('ready')
+        return
+      }
+      const session = await ensureSession(trimmedDisplayName)
       setCurrentUserId(session.user.id)
-      setAuthStatus('ready')
-    } catch { setLoginError('We could not start your session. Check that the API is running.') }
+      if (mode === 'create') {
+        const created = await createRoom(trimmedRoomValue)
+        setRoomContext({ id: created.room.publicId, name: created.room.name })
+        setRoomMembers([{ id: session.user.id, name: trimmedDisplayName, role: 'admin', status: 'active' }])
+        setJoinRequests([])
+        setAuthStatus('ready')
+      } else {
+        const result = await joinRoom(trimmedRoomValue)
+        if ('membership' in result) {
+          setPendingRoomName(roomNameOrId.toUpperCase())
+          setAuthStatus('entry')
+          setLoginError('Your request was sent to the room admin. You can enter after it is approved.')
+        }
+      }
+    } catch (error) {
+      setLoginError(error instanceof ApiError ? error.message : 'We could not complete that request. Check that the API is running.')
+    }
   }
 
-  if (authStatus !== 'ready') return <LoginPage apiConfigured={apiIsConfigured} error={loginError} onSubmit={login} />
+  if (authStatus === 'checking') return <main className="login-page"><div className="login-mark">ff</div><p className="muted">Checking your session…</p></main>
+  if (authStatus === 'entry') return <EntryPage apiConfigured={apiIsConfigured} error={loginError} pendingRoomName={pendingRoomName} onSubmit={enterRoom} />
 
   const addExpense = async (draft: ExpenseDraft) => {
     const title = draft.description || 'Shared expense'
@@ -211,10 +235,12 @@ function App() {
   )
 }
 
-function LoginPage({ apiConfigured, error, onSubmit }: { apiConfigured: boolean; error: string; onSubmit: (displayName: string) => Promise<void> }) {
+function EntryPage({ apiConfigured, error, pendingRoomName, onSubmit }: { apiConfigured: boolean; error: string; pendingRoomName: string; onSubmit: (mode: 'create' | 'join', displayName: string, roomNameOrId: string) => Promise<void> }) {
   const [displayName, setDisplayName] = useState('')
-  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); void onSubmit(displayName.trim()) }
-  return <main className="login-page"><div className="login-mark">ff</div><p className="eyebrow">Your room's money</p><h1>Welcome to<br /><em>flatmate finance</em></h1><p className="login-copy">A calm place to keep track of shared expenses with your flatmates.</p><form className="login-form" onSubmit={submit}><label htmlFor="display-name">What should we call you?</label><input id="display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name" autoComplete="name" autoFocus required maxLength={80} /><button className="primary-button" type="submit">Continue <span>→</span></button></form>{error && <p className="login-error" role="alert">{error}</p>}<small className="login-note">{apiConfigured ? 'Your session is private and stored securely.' : 'Preview mode · connect the API for live room data.'}</small></main>
+  const [mode, setMode] = useState<'create' | 'join'>('create')
+  const [roomNameOrId, setRoomNameOrId] = useState('')
+  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); void onSubmit(mode, displayName.trim(), roomNameOrId.trim()) }
+  return <main className="login-page"><div className="login-mark">ff</div><p className="eyebrow">Your shared home</p><h1>Welcome to<br /><em>flatmate finance</em></h1><p className="login-copy">Create a room for your flatmates or request access to one you already share.</p><div className="entry-tabs" role="tablist" aria-label="Room access"><button className={mode === 'create' ? 'active' : ''} onClick={() => { setMode('create'); setRoomNameOrId('') }} type="button">Create room</button><button className={mode === 'join' ? 'active' : ''} onClick={() => { setMode('join'); setRoomNameOrId('') }} type="button">Join room</button></div><form className="login-form" onSubmit={submit}><label htmlFor="display-name">Your name</label><input id="display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="e.g. Akshay" autoComplete="name" autoFocus required maxLength={80} />{mode === 'create' ? <><label htmlFor="room-name">Room name</label><input id="room-name" value={roomNameOrId} onChange={(event) => setRoomNameOrId(event.target.value)} placeholder="e.g. Green Park Flat" required maxLength={100} /><button className="primary-button" type="submit">Create room <span>→</span></button></> : <><label htmlFor="room-id">Room ID</label><input id="room-id" value={roomNameOrId} onChange={(event) => setRoomNameOrId(event.target.value.toUpperCase())} placeholder="e.g. A1B2C3D4" required minLength={4} maxLength={8} /><button className="primary-button" type="submit">Request to join <span>→</span></button></>}</form>{pendingRoomName && <p className="pending-notice">Your request for <strong>{pendingRoomName}</strong> is waiting for admin approval.</p>}{error && <p className="login-error" role="alert">{error}</p>}<small className="login-note">{apiConfigured ? 'Joining a room always requires approval from its admin.' : 'Preview mode · connect the API for live room data.'}</small></main>
 }
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {

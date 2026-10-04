@@ -1,7 +1,11 @@
+import { existsSync } from 'node:fs'
 import dotenv from 'dotenv'
 import { z } from 'zod'
 
-dotenv.config({ path: process.env.DOTENV_CONFIG_PATH ?? 'backend/.env' })
+const candidatePaths = [process.env.DOTENV_CONFIG_PATH, '.env', 'backend/.env', '../backend/.env']
+const envPath = candidatePaths.find((candidate): candidate is string => typeof candidate === 'string' && existsSync(candidate))
+if (envPath) dotenv.config({ path: envPath })
+else dotenv.config()
 
 const schema = z.object({
   MONGODB_URI: z.string().min(1),
