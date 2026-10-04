@@ -1,0 +1,9 @@
+{
+  "name": "Flatmate Finance",
+  "short_name": "Flatmate",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbfaf7",
+  "theme_color": "#426957",
+  "description": "Your room's money, without the noise."
+}
