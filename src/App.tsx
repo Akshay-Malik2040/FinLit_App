@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
+import { apiIsConfigured, ensureSession, listExpenses } from './services/api'
 
 type View = 'home' | 'activity' | 'room'
 type Overlay = 'add' | 'expense' | 'pay' | 'rooms' | 'leave' | null
@@ -31,7 +32,27 @@ function App() {
   const [toast, setToast] = useState('')
   const [joinRequest, setJoinRequest] = useState(true)
 
-  const showToast = (message: string) => {
+  useEffect(() => {
+    if (!apiIsConfigured) return
+    void (async () => {
+      try {
+        await ensureSession('Akshay')
+        const result = await listExpenses('GP7K29')
+        setExpenses(result.expenses.filter((expense) => !expense.voidedAt).map((expense) => ({
+          id: Number.parseInt(expense._id.slice(-8), 16),
+          title: expense.description,
+          amount: expense.amountPaise / 100,
+          paidBy: typeof expense.payerId === 'string' ? 'Roommate' : expense.payerId.displayName,
+          date: new Date(expense.expenseDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+          note: '',
+        })))
+      } catch {
+        showToast('We could not load the room. Showing the local preview.')
+      }
+    })()
+  }, [])
+
+  function showToast(message: string) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
   }
