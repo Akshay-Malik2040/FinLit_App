@@ -148,10 +148,21 @@ export function leaveRoom(roomId: string) {
   })
 }
 
+export type ApiPendingPayment = {
+  _id: string
+  fromUserId: { _id: string; displayName: string } | string
+  toUserId: { _id: string; displayName: string } | string
+  amountPaise: number
+  paymentDate: string
+  status: 'pending' | 'completed' | 'rejected'
+  recordedBy?: { _id: string; displayName: string } | string
+}
+
 export function getBalances(roomId: string) {
   return request<{
     balances: Array<{ userId: string; amountPaise: number }>
     suggestions: Array<{ fromUserId: string; toUserId: string; amountPaise: number }>
+    pendingPayments?: ApiPendingPayment[]
   }>(`/api/rooms/${roomId}/balances`)
 }
 
@@ -188,6 +199,13 @@ export function listJoinRequests(roomId: string) {
 
 export function decideJoinRequest(roomId: string, membershipId: string, action: 'approve' | 'reject') {
   return request(`/api/rooms/${roomId}/requests/${membershipId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ action }),
+  })
+}
+
+export function decidePayment(roomId: string, paymentId: string, action: 'approve' | 'reject') {
+  return request<{ payment: ApiPendingPayment }>(`/api/rooms/${roomId}/payments/${paymentId}`, {
     method: 'PATCH',
     body: JSON.stringify({ action }),
   })

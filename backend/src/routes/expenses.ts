@@ -52,6 +52,7 @@ router.get('/rooms/:roomId/expenses', getRoomForMember, asyncHandler(async (req,
 
 router.get('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
   if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
+  if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const expense = await Expense.findById(req.params.expenseId).populate('payerId createdBy', 'displayName')
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
@@ -61,6 +62,7 @@ router.get('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
 
 router.get('/expenses/:expenseId/history', asyncHandler(async (req, res, next) => {
   if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
+  if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const expense = await Expense.findById(req.params.expenseId).select('roomId')
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
@@ -71,18 +73,26 @@ router.get('/expenses/:expenseId/history', asyncHandler(async (req, res, next) =
 
 router.patch('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
   if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
+  if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const expense = await Expense.findById(req.params.expenseId)
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
+  if (expense.voidedAt) throw new HttpError(400, 'EXPENSE_ALREADY_VOIDED', 'Voided expenses cannot be edited.')
   const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
   if (!membership || (membership.role !== 'admin' && expense.createdBy.toString() !== req.userId)) throw new HttpError(403, 'EXPENSE_EDIT_DENIED', 'You do not have permission to edit this expense.')
   const input = expenseInput.partial().safeParse(req.body)
   if (!input.success) throw new HttpError(400, 'INVALID_EXPENSE', 'Please check the updated expense.')
   const previous = expense.toObject()
+  const allowed = await activeMemberIds(expense.roomId.toString())
+  if (input.data.payerId !== undefined) {
+    ensureMembers([input.data.payerId], allowed)
+    expense.payerId = input.data.payerId as never
+  }
   if (input.data.description !== undefined) expense.description = input.data.description || 'Shared expense'
   if (input.data.expenseDate !== undefined) expense.expenseDate = input.data.expenseDate
   if (input.data.amountPaise !== undefined || input.data.participantIds !== undefined || input.data.allocations !== undefined || input.data.splitMethod !== undefined) {
     const amount = input.data.amountPaise ?? expense.amountPaise
     const participantIds = input.data.participantIds ?? expense.participants.map(String)
+    ensureMembers(participantIds, allowed)
     const method = input.data.splitMethod ?? expense.splitMethod
     let allocations = input.data.allocations ?? expense.allocations.map((allocation) => ({ userId: allocation.userId.toString(), amountPaise: allocation.amountPaise, percentage: allocation.percentage ?? undefined }))
     if (method === 'equal') allocations = splitEqual(amount, participantIds)
@@ -97,12 +107,23 @@ router.patch('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
 
 router.post('/expenses/:expenseId/void', asyncHandler(async (req, res, next) => {
   if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
+  if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const expense = await Expense.findById(req.params.expenseId)
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
-  const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
-  if (!membership || (membership.role !== 'admin' && expense.createdBy.toString() !== req.userId)) throw new HttpError(403, 'EXPENSE_VOID_DENIED', 'You do not have permission to void this expense.')
-  expense.voidedAt = new Date(); await expense.save()
-  await AuditEvent.create({ roomId: expense.roomId, entityType: 'expense', entityId: expense._id, action: 'expense.voided', actorId: req.userId })
+  expense.voidedAt = new Date()
+  await expense.save()
+  await AuditEvent.create({
+    roomId: expense.roomId,
+    entityType: 'expense',
+    entityId: expense._id,
+    action: 'expense.voided',
+    actorId: req.userId,
+    previousValues: {
+      description: expense.description,
+      amountPaise: expense.amountPaise,
+      payerId: expense.payerId,
+    },
+  })
   ok(res, { expense })
 }))
 

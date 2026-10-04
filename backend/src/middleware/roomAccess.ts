@@ -7,8 +7,12 @@ import { HttpError } from '../utils/http.js'
 export async function getRoomForMember(req: Request, res: Response, next: NextFunction) {
   try {
     if (!req.userId) throw new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.')
-    const roomId = req.params.roomId
-    const room = isValidObjectId(roomId) ? await Room.findById(roomId) : await Room.findOne({ publicId: roomId })
+    const rawRoomId = req.params.roomId
+    const roomId = typeof rawRoomId === 'string' ? rawRoomId : (Array.isArray(rawRoomId) ? rawRoomId[0] : '')
+    if (!roomId) throw new HttpError(400, 'INVALID_ROOM_ID', 'Room ID is required.')
+    const room = isValidObjectId(roomId)
+      ? ((await Room.findById(roomId)) ?? (await Room.findOne({ publicId: roomId.toUpperCase() })))
+      : await Room.findOne({ publicId: roomId.toUpperCase() })
     if (!room) throw new HttpError(404, 'ROOM_NOT_FOUND', 'This room could not be found.')
     const membership = await Membership.findOne({ roomId: room._id, userId: req.userId, status: 'active' })
     if (!membership) throw new HttpError(403, 'ROOM_ACCESS_DENIED', 'You do not have access to this room.')

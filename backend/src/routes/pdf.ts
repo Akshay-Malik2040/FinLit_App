@@ -17,9 +17,9 @@ router.get('/rooms/:roomId/summary.pdf', requireAuth, getRoomForMember, asyncHan
   document.fontSize(22).text(room.name)
   document.fontSize(11).fillColor('#666').text(`Room ${room.publicId} · Generated ${new Date().toLocaleDateString('en-IN')}`)
   document.moveDown().fillColor('#222').fontSize(15).text('Expenses')
-  for (const expense of expenses) document.fontSize(11).text(`${expense.description} · ₹${(expense.amountPaise / 100).toLocaleString('en-IN')} · Paid by ${typeof expense.payerId === 'object' && 'displayName' in expense.payerId ? expense.payerId.displayName : 'roommate'}`)
+  for (const expense of expenses) document.fontSize(11).text(`${expense.description} · Rs. ${(expense.amountPaise / 100).toLocaleString('en-IN')} · Paid by ${typeof expense.payerId === 'object' && 'displayName' in expense.payerId ? expense.payerId.displayName : 'roommate'}`)
   document.moveDown().fontSize(15).text('Recorded payments')
-  for (const payment of payments) document.fontSize(11).text(`₹${(payment.amountPaise / 100).toLocaleString('en-IN')} recorded on ${payment.paymentDate.toLocaleDateString('en-IN')}`)
+  for (const payment of payments) document.fontSize(11).text(`Rs. ${(payment.amountPaise / 100).toLocaleString('en-IN')} recorded on ${payment.paymentDate.toLocaleDateString('en-IN')}`)
   document.end()
 }))
 

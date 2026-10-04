@@ -7,6 +7,9 @@ const paymentSchema = new Schema({
   amountPaise: { type: Number, required: true, min: 1 },
   recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   paymentDate: { type: Date, required: true },
+  status: { type: String, enum: ['pending', 'completed', 'rejected'], default: 'pending', index: true },
+  confirmedAt: { type: Date },
+  rejectedAt: { type: Date },
 }, { timestamps: true })
 paymentSchema.index({ roomId: 1, paymentDate: -1 })
 

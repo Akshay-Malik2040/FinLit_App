@@ -45,6 +45,6 @@ app.use('/api', pdfRoutes)
 app.use((_req, _res, next) => next(new HttpError(404, 'NOT_FOUND', 'This endpoint could not be found.')))
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const normalized = error instanceof HttpError ? error : new HttpError(500, 'INTERNAL_ERROR', 'Something went wrong. Please try again.')
-  if (env.NODE_ENV !== 'production') console.error(error)
+  if (env.NODE_ENV !== 'production' && env.NODE_ENV !== 'test' && normalized.status >= 500) console.error(error)
   res.status(normalized.status).json({ success: false, error: { code: normalized.code, message: normalized.message } })
 })
