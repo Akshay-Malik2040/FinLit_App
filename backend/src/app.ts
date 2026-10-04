@@ -13,11 +13,13 @@ import pdfRoutes from './routes/pdf.js'
 import { HttpError } from './utils/http.js'
 
 export const app = express()
+app.set('trust proxy', 1)
 app.use(helmet())
 app.use(cors({ origin: env.CLIENT_URL, credentials: true }))
 app.use(express.json({ limit: '100kb' }))
 app.use(cookieParser())
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }))
+app.get('/', (_req, res) => res.json({ success: true, data: { service: 'Flatmate Finance API', frontend: env.CLIENT_URL } }))
 app.get('/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }))
 app.use('/api/auth', authRoutes)
 app.use('/api/rooms', roomRoutes)

@@ -11,6 +11,7 @@ All responses use `{ success: true, data }` or `{ success: false, error: { code,
 
 ## Rooms and membership
 - `POST /api/rooms` with `{ name, recoveryPassword? }`
+- `GET /api/rooms`
 - `POST /api/rooms/join` with `{ roomId }`
 - `GET /api/rooms/:roomId`
 - `GET /api/rooms/:roomId/requests` (admin)

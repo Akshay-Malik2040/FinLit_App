@@ -14,6 +14,11 @@ const roomSchema = z.object({ name: z.string().trim().min(1).max(100), recoveryP
 const roomCode = () => randomBytes(4).toString('hex').toUpperCase()
 
 router.use(requireAuth)
+router.get('/', asyncHandler(async (req, res) => {
+  const memberships = await Membership.find({ userId: req.userId, status: { $in: ['active', 'left'] } }).populate('roomId')
+  ok(res, { rooms: memberships })
+}))
+
 router.post('/', asyncHandler(async (req, res) => {
   const input = roomSchema.safeParse(req.body)
   if (!input.success) throw new HttpError(400, 'INVALID_ROOM', 'Please provide a room name and a valid recovery password.')
