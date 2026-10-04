@@ -472,11 +472,9 @@ function App() {
     recoveryQuestion?: string
   }) => {
     setLoginError('')
+    setIsLoadingRoom(true)
     try {
       const session = await createSession(displayName)
-      setCurrentUser(session.user)
-      setAuthStatus('ready')
-
       const res = await createRoom(roomName, recoveryPassword, recoveryQuestion)
       const newRoom = res.room
       showToast(`Created room "${newRoom.name}"`)
@@ -484,7 +482,10 @@ function App() {
       const updatedRooms = await listRooms()
       setUserRooms(updatedRooms.rooms)
       setActiveRoomId(newRoom.publicId)
+      setCurrentUser(session.user)
+      setAuthStatus('ready')
     } catch (err: unknown) {
+      setIsLoadingRoom(false)
       const msg = err instanceof Error ? err.message : 'Could not create room'
       setLoginError(msg)
       throw err
@@ -500,11 +501,9 @@ function App() {
     roomId: string
   }) => {
     setLoginError('')
+    setIsLoadingRoom(true)
     try {
       const session = await createSession(displayName)
-      setCurrentUser(session.user)
-      setAuthStatus('ready')
-
       await joinRoom(roomId)
       showToast(`Join request submitted for room ${roomId}`)
 
@@ -517,7 +516,10 @@ function App() {
         setActiveRoomId(null)
         setRoomContext(null)
       }
+      setCurrentUser(session.user)
+      setAuthStatus('ready')
     } catch (err: unknown) {
+      setIsLoadingRoom(false)
       const msg = err instanceof Error ? err.message : 'Could not join room'
       setLoginError(msg)
       throw err
@@ -535,18 +537,19 @@ function App() {
     recoveryPassword: string
   }) => {
     setLoginError('')
+    setIsLoadingRoom(true)
     try {
       const session = await createSession(displayName)
-      setCurrentUser(session.user)
-      setAuthStatus('ready')
-
       const res = await recoverRoom(roomId, recoveryPassword)
       showToast(`Room "${res.room.name}" recovered! Admin access granted.`)
 
       const updatedRooms = await listRooms()
       setUserRooms(updatedRooms.rooms)
       setActiveRoomId(res.room.publicId)
+      setCurrentUser(session.user)
+      setAuthStatus('ready')
     } catch (err: unknown) {
+      setIsLoadingRoom(false)
       const msg = err instanceof Error ? err.message : 'Could not recover room'
       setLoginError(msg)
       throw err
@@ -2694,17 +2697,23 @@ function RoomSwitcher({
       </div>
 
       {installPrompt && (
-        <button
-          type="button"
-          className="btn-primary full"
-          style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-          onClick={async () => {
-            await installPrompt.prompt()
-            onInstallHandled()
-          }}
-        >
-          <span>📲</span> Install FinLit Web App
-        </button>
+        <div className="install-app-card">
+          <div className="install-app-icon">📲</div>
+          <div className="install-app-info">
+            <strong>Install FinLit App</strong>
+            <p>Add to home screen for instant offline access</p>
+          </div>
+          <button
+            type="button"
+            className="btn-primary sm install-btn-action"
+            onClick={async () => {
+              await installPrompt.prompt()
+              onInstallHandled()
+            }}
+          >
+            Install
+          </button>
+        </div>
       )}
 
       <button className="ghost-btn danger full" onClick={onLogout}>

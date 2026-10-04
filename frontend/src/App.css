@@ -1518,7 +1518,50 @@ h3 {
   flex-direction: column;
   gap: 12px;
   padding-top: 14px;
+  margin-bottom: 16px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.install-app-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  text-align: left;
+}
+
+.install-app-icon {
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.install-app-info {
+  flex: 1;
+}
+
+.install-app-info strong {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-primary);
+}
+
+.install-app-info p {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  margin-top: 2px;
+}
+
+.install-btn-action {
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 6px 14px;
 }
 
 .inline-action-form label {
