@@ -83,10 +83,6 @@ router.patch('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
   if (!input.success) throw new HttpError(400, 'INVALID_EXPENSE', 'Please check the updated expense.')
   const previous = expense.toObject()
   const allowed = await activeMemberIds(expense.roomId.toString())
-  if (input.data.payerId !== undefined) {
-    ensureMembers([input.data.payerId], allowed)
-    expense.payerId = input.data.payerId as never
-  }
   if (input.data.description !== undefined) expense.description = input.data.description || 'Shared expense'
   if (input.data.expenseDate !== undefined) expense.expenseDate = input.data.expenseDate
   if (input.data.amountPaise !== undefined || input.data.participantIds !== undefined || input.data.allocations !== undefined || input.data.splitMethod !== undefined) {
@@ -110,6 +106,10 @@ router.post('/expenses/:expenseId/void', asyncHandler(async (req, res, next) => 
   if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const expense = await Expense.findById(req.params.expenseId)
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
+  if (expense.voidedAt) throw new HttpError(400, 'EXPENSE_ALREADY_VOIDED', 'This expense is already voided.')
+  if (expense.payerId.toString() !== req.userId) {
+    throw new HttpError(403, 'EXPENSE_VOID_DENIED', 'Only the person who paid for this expense can void it.')
+  }
   expense.voidedAt = new Date()
   await expense.save()
   await AuditEvent.create({

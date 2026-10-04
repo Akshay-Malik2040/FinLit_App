@@ -580,7 +580,6 @@ function App() {
   const handleEditExpense = async (draft: {
     description: string
     amountPaise: number
-    payerId: string
     participantIds: string[]
   }) => {
     if (!selectedExpense) return
@@ -905,6 +904,7 @@ function App() {
       {overlay === 'expense' && selectedExpense && (
         <ExpenseDetails
           expense={selectedExpense}
+          currentUserId={currentUser.id}
           onClose={() => setOverlay(null)}
           onEdit={() => setOverlay('edit')}
           onHistory={() => void handleOpenHistory()}
@@ -2130,12 +2130,14 @@ function AddExpense({
 // -------------------------------------------------------------------------
 function ExpenseDetails({
   expense,
+  currentUserId,
   onClose,
   onEdit,
   onHistory,
   onVoid,
 }: {
   expense: Expense
+  currentUserId: string
   onClose: () => void
   onEdit: () => void
   onHistory: () => void
@@ -2143,6 +2145,7 @@ function ExpenseDetails({
 }) {
   const [confirmVoid, setConfirmVoid] = useState(false)
   const share = expense.amount / expense.participantCount
+  const isPayer = currentUserId === expense.payerId
 
   return (
     <Modal title="Expense Details" onClose={onClose}>
@@ -2187,25 +2190,27 @@ function ExpenseDetails({
           </button>
         </div>
 
-        <div className="void-area">
-          {confirmVoid ? (
-            <div className="confirm-void-box">
-              <p>Voiding will cancel this expense of {money(expense.amount)} from all balances.</p>
-              <div className="btn-pair">
-                <button className="btn-primary danger" onClick={onVoid}>
-                  Confirm Void
-                </button>
-                <button className="btn-secondary" onClick={() => setConfirmVoid(false)}>
-                  Cancel
-                </button>
+        {isPayer && (
+          <div className="void-area">
+            {confirmVoid ? (
+              <div className="confirm-void-box">
+                <p>Voiding will cancel this expense of {money(expense.amount)} from all balances.</p>
+                <div className="btn-pair">
+                  <button className="btn-primary danger" onClick={onVoid}>
+                    Confirm Void
+                  </button>
+                  <button className="btn-secondary" onClick={() => setConfirmVoid(false)}>
+                    Cancel
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <button className="ghost-btn danger" onClick={() => setConfirmVoid(true)}>
-              Void Expense
-            </button>
-          )}
-        </div>
+            ) : (
+              <button className="ghost-btn danger" onClick={() => setConfirmVoid(true)}>
+                Void Expense
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   )
@@ -2226,13 +2231,11 @@ function EditExpense({
   onSubmit: (draft: {
     description: string
     amountPaise: number
-    payerId: string
     participantIds: string[]
   }) => Promise<void>
 }) {
   const [title, setTitle] = useState(expense.title)
   const [amount, setAmount] = useState(String(expense.amount))
-  const [payerId, setPayerId] = useState(expense.payerId)
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>(
     expense.participantIds && expense.participantIds.length > 0
       ? expense.participantIds
@@ -2270,7 +2273,6 @@ function EditExpense({
             await onSubmit({
               description: title.trim() || 'Shared expense',
               amountPaise: Math.round(Number(amount) * 100),
-              payerId,
               participantIds: selectedMemberIds,
             })
           } finally {
@@ -2304,22 +2306,6 @@ function EditExpense({
             required
             maxLength={120}
           />
-        </div>
-
-        <div className="input-group">
-          <label htmlFor="edit-payer-select">Paid By</label>
-          <select
-            id="edit-payer-select"
-            className="modern-select"
-            value={payerId}
-            onChange={(e) => setPayerId(e.target.value)}
-          >
-            {availableMembers.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
         </div>
 
         <div className="split-selection-block">
