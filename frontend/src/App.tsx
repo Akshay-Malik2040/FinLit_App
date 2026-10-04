@@ -154,11 +154,31 @@ function App() {
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([])
   const [incomingPayments, setIncomingPayments] = useState<ApiPendingPayment[]>([])
   const [outgoingPayments, setOutgoingPayments] = useState<ApiPendingPayment[]>([])
+  // PWA Install Prompt State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
 
   function showToast(message: string) {
     setToast(message)
     window.setTimeout(() => setToast(''), 3000)
   }
+
+  // PWA beforeinstallprompt handler
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault()
+      setDeferredPrompt(e)
+    }
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null)
+      showToast('FinLit installed successfully!')
+    }
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    window.addEventListener('appinstalled', handleAppInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+    }
+  }, [])
 
   // 1. Initial auth check
   useEffect(() => {
@@ -969,6 +989,8 @@ function App() {
           currentUser={currentUser}
           currentRoomId={activeRoomId}
           rooms={userRooms}
+          installPrompt={deferredPrompt}
+          onInstallHandled={() => setDeferredPrompt(null)}
           onSelectRoom={(code) => {
             startTransition(() => {
               setActiveRoomId(code)
@@ -2540,6 +2562,8 @@ function RoomSwitcher({
   currentUser,
   currentRoomId,
   rooms,
+  installPrompt,
+  onInstallHandled,
   onSelectRoom,
   onCreateRoom,
   onJoinRoom,
@@ -2549,6 +2573,8 @@ function RoomSwitcher({
   currentUser: CurrentUser
   currentRoomId: string | null
   rooms: ApiRoomMembership[]
+  installPrompt: any
+  onInstallHandled: () => void
   onSelectRoom: (code: string) => void
   onCreateRoom: (name: string, recoveryPassword?: string, recoveryQuestion?: string) => Promise<void>
   onJoinRoom: (code: string) => Promise<void>
@@ -2666,6 +2692,20 @@ function RoomSwitcher({
           </div>
         </form>
       </div>
+
+      {installPrompt && (
+        <button
+          type="button"
+          className="btn-primary full"
+          style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          onClick={async () => {
+            await installPrompt.prompt()
+            onInstallHandled()
+          }}
+        >
+          <span>📲</span> Install FinLit Web App
+        </button>
+      )}
 
       <button className="ghost-btn danger full" onClick={onLogout}>
         Sign Out

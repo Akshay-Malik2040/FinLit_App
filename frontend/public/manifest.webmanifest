@@ -1,9 +1,49 @@
 {
-  "name": "FinLit",
+  "name": "FinLit — Roommate Finance Ledger",
   "short_name": "FinLit",
+  "description": "A calm, minimalist e-ink inspired expense tracker and settlement ledger for flatmates.",
   "start_url": "/",
+  "id": "/",
   "display": "standalone",
-  "background_color": "#fbfaf7",
-  "theme_color": "#426957",
-  "description": "Your room's money, without the noise."
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#f5f4ef",
+  "theme_color": "#181816",
+  "categories": ["finance", "utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add Expense",
+      "short_name": "Add",
+      "description": "Quickly log a shared expense",
+      "url": "/?action=add",
+      "icons": [{ "src": "/icon-192.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "View Ledger",
+      "short_name": "Ledger",
+      "description": "Check current dues and balances",
+      "url": "/?view=home",
+      "icons": [{ "src": "/icon-192.svg", "sizes": "192x192" }]
+    }
+  ]
 }
