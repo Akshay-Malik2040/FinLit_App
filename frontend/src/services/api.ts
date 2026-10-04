@@ -11,7 +11,13 @@ export type ApiExpense = {
   participants?: string[]
   allocations?: Array<{ userId: string; amountPaise: number; percentage?: number }>
   splitMethod?: 'equal' | 'custom' | 'percentage'
+  isEdited?: boolean
   voidedAt?: string
+  voidRequest?: {
+    requestedBy: { _id: string; displayName: string } | string
+    requestedAt: string
+    status: 'pending' | 'approved' | 'rejected'
+  }
 }
 
 export type ApiMember = {
@@ -272,8 +278,15 @@ export function updateExpense(expenseId: string, draft: Partial<ExpenseDraft>) {
 }
 
 export function voidExpense(expenseId: string) {
-  return request<{ expense: ApiExpense }>(`/api/expenses/${expenseId}/void`, {
+  return request<{ expense: ApiExpense; voided: boolean; pendingApproval?: boolean; message?: string }>(`/api/expenses/${expenseId}/void`, {
     method: 'POST',
+  })
+}
+
+export function decideVoidRequest(expenseId: string, decision: 'approve' | 'reject') {
+  return request<{ expense: ApiExpense; voided: boolean; message: string }>(`/api/expenses/${expenseId}/decide-void`, {
+    method: 'POST',
+    body: JSON.stringify({ decision }),
   })
 }
 

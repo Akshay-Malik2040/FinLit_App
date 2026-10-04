@@ -46,14 +46,21 @@ router.get('/rooms/:roomId/expenses', getRoomForMember, asyncHandler(async (req,
   const page = Math.max(1, Number(req.query.page ?? 1))
   const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 20)))
   const filter = { roomId: res.locals.room._id, ...(req.query.from ? { expenseDate: { $gte: new Date(String(req.query.from)) } } : {}) }
-  const [expenses, total] = await Promise.all([Expense.find(filter).sort({ expenseDate: -1 }).skip((page - 1) * limit).limit(limit).populate('payerId createdBy', 'displayName'), Expense.countDocuments(filter)])
+  const [expenses, total] = await Promise.all([
+    Expense.find(filter)
+      .sort({ updatedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('payerId createdBy voidRequest.requestedBy', 'displayName'),
+    Expense.countDocuments(filter),
+  ])
   ok(res, { expenses, page, limit, total })
 }))
 
 router.get('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
   if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
   if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
-  const expense = await Expense.findById(req.params.expenseId).populate('payerId createdBy', 'displayName')
+  const expense = await Expense.findById(req.params.expenseId).populate('payerId createdBy voidRequest.requestedBy', 'displayName')
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
   if (!membership) throw new HttpError(403, 'ROOM_ACCESS_DENIED', 'You do not have access to this expense.')
@@ -96,6 +103,7 @@ router.patch('/expenses/:expenseId', asyncHandler(async (req, res, next) => {
     validateAllocations(amount, allocations, method)
     expense.amountPaise = amount; expense.participants = participantIds as never; expense.allocations = allocations as never; expense.splitMethod = method
   }
+  expense.isEdited = true
   await expense.save()
   await AuditEvent.create({ roomId: expense.roomId, entityType: 'expense', entityId: expense._id, action: 'expense.updated', actorId: req.userId, previousValues: previous, newValues: expense.toObject() })
   ok(res, { expense })
@@ -107,24 +115,115 @@ router.post('/expenses/:expenseId/void', asyncHandler(async (req, res, next) => 
   const expense = await Expense.findById(req.params.expenseId)
   if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
   if (expense.voidedAt) throw new HttpError(400, 'EXPENSE_ALREADY_VOIDED', 'This expense is already voided.')
-  if (expense.payerId.toString() !== req.userId) {
-    throw new HttpError(403, 'EXPENSE_VOID_DENIED', 'Only the person who paid for this expense can void it.')
+
+  const membership = await Membership.findOne({ roomId: expense.roomId, userId: req.userId, status: 'active' })
+  if (!membership) throw new HttpError(403, 'ROOM_ACCESS_DENIED', 'You do not have access to this room.')
+
+  const isPayer = expense.payerId.toString() === req.userId
+  const isAdmin = membership.role === 'admin'
+
+  if (!isPayer && !isAdmin) {
+    throw new HttpError(403, 'EXPENSE_VOID_DENIED', 'Only the person who paid or a room admin can void/request void on this expense.')
   }
-  expense.voidedAt = new Date()
+
+  if (isPayer) {
+    expense.voidedAt = new Date()
+    if (expense.voidRequest) {
+      expense.voidRequest.status = 'approved'
+    }
+    await expense.save()
+    await AuditEvent.create({
+      roomId: expense.roomId,
+      entityType: 'expense',
+      entityId: expense._id,
+      action: 'expense.voided',
+      actorId: req.userId,
+      previousValues: {
+        description: expense.description,
+        amountPaise: expense.amountPaise,
+        payerId: expense.payerId,
+      },
+    })
+    return ok(res, { expense, voided: true, message: 'Expense voided.' })
+  }
+
+  // Admin request: requires payer approval
+  if (expense.voidRequest && expense.voidRequest.status === 'pending') {
+    throw new HttpError(400, 'VOID_REQUEST_ALREADY_PENDING', 'A void approval request is already pending with the payer.')
+  }
+
+  expense.voidRequest = {
+    requestedBy: req.userId as never,
+    requestedAt: new Date(),
+    status: 'pending',
+  }
   await expense.save()
   await AuditEvent.create({
     roomId: expense.roomId,
     entityType: 'expense',
     entityId: expense._id,
-    action: 'expense.voided',
+    action: 'expense.void_requested',
     actorId: req.userId,
-    previousValues: {
-      description: expense.description,
-      amountPaise: expense.amountPaise,
-      payerId: expense.payerId,
+    newValues: {
+      requestedBy: req.userId,
+      status: 'pending',
     },
   })
-  ok(res, { expense })
+  return ok(res, { expense, voided: false, pendingApproval: true, message: 'Void request sent to payer for confirmation.' })
+}))
+
+router.post('/expenses/:expenseId/decide-void', asyncHandler(async (req, res, next) => {
+  if (!req.userId) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please start a session to continue.'))
+  if (!isValidObjectId(req.params.expenseId)) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
+  const expense = await Expense.findById(req.params.expenseId)
+  if (!expense) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'This expense could not be found.')
+  if (expense.voidedAt) throw new HttpError(400, 'EXPENSE_ALREADY_VOIDED', 'This expense is already voided.')
+
+  if (expense.payerId.toString() !== req.userId) {
+    throw new HttpError(403, 'EXPENSE_DECIDE_DENIED', 'Only the person who paid for this expense can approve or reject the void request.')
+  }
+
+  if (!expense.voidRequest || expense.voidRequest.status !== 'pending') {
+    throw new HttpError(400, 'NO_PENDING_VOID_REQUEST', 'There is no pending void request for this expense.')
+  }
+
+  const decision = req.body?.decision
+  if (decision !== 'approve' && decision !== 'reject') {
+    throw new HttpError(400, 'INVALID_DECISION', 'Please specify a valid decision (approve or reject).')
+  }
+
+  if (decision === 'approve') {
+    expense.voidedAt = new Date()
+    expense.voidRequest.status = 'approved'
+    await expense.save()
+    await AuditEvent.create({
+      roomId: expense.roomId,
+      entityType: 'expense',
+      entityId: expense._id,
+      action: 'expense.voided',
+      actorId: req.userId,
+      previousValues: {
+        description: expense.description,
+        amountPaise: expense.amountPaise,
+        payerId: expense.payerId,
+      },
+    })
+    return ok(res, { expense, voided: true, message: 'Void approved and finalized.' })
+  }
+
+  expense.voidRequest.status = 'rejected'
+  await expense.save()
+  await AuditEvent.create({
+    roomId: expense.roomId,
+    entityType: 'expense',
+    entityId: expense._id,
+    action: 'expense.void_rejected',
+    actorId: req.userId,
+    newValues: {
+      status: 'rejected',
+    },
+  })
+  return ok(res, { expense, voided: false, message: 'Void request rejected.' })
 }))
 
 export default router

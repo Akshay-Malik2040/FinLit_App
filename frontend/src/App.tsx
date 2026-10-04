@@ -7,6 +7,7 @@ import {
   createSession,
   decideJoinRequest,
   decidePayment,
+  decideVoidRequest,
   getActivity,
   getBalances,
   getCurrentUser,
@@ -48,6 +49,11 @@ type Expense = {
   rawDate: string
   note: string
   edited?: boolean
+  voidRequest?: {
+    requestedBy: string
+    requestedAt: string
+    status: 'pending' | 'approved' | 'rejected'
+  }
 }
 
 type RoomMember = {
@@ -102,6 +108,19 @@ const toUiExpense = (expense: ApiExpense): Expense => {
     expense.allocations?.map((a) => String(a.userId)) ||
     []
 
+  let voidReq = undefined
+  if (expense.voidRequest) {
+    const reqByName =
+      typeof expense.voidRequest.requestedBy === 'object' && expense.voidRequest.requestedBy !== null
+        ? expense.voidRequest.requestedBy.displayName
+        : 'Admin'
+    voidReq = {
+      requestedBy: reqByName,
+      requestedAt: expense.voidRequest.requestedAt,
+      status: expense.voidRequest.status,
+    }
+  }
+
   return {
     id: expense._id,
     apiId: expense._id,
@@ -117,7 +136,8 @@ const toUiExpense = (expense: ApiExpense): Expense => {
     }),
     rawDate: expense.expenseDate,
     note: '',
-    edited: Boolean(expense.allocations && expense.allocations.length > 0 && expense.splitMethod !== 'equal'),
+    edited: Boolean(expense.isEdited),
+    voidRequest: voidReq,
   }
 }
 
@@ -595,12 +615,27 @@ function App() {
 
   const handleVoidExpense = async (expenseId: string) => {
     try {
-      await voidExpense(expenseId)
+      const res = await voidExpense(expenseId)
       setOverlay(null)
-      showToast('Expense voided')
+      if (res.pendingApproval) {
+        showToast('Void request sent to payer for approval.')
+      } else {
+        showToast('Expense voided')
+      }
       await refreshRoomData()
     } catch {
       showToast('Could not void expense.')
+    }
+  }
+
+  const handleDecideVoidRequest = async (expenseId: string, decision: 'approve' | 'reject') => {
+    try {
+      await decideVoidRequest(expenseId, decision)
+      setOverlay(null)
+      showToast(decision === 'approve' ? 'Expense void approved' : 'Void request declined')
+      await refreshRoomData()
+    } catch {
+      showToast('Could not process void decision.')
     }
   }
 
@@ -835,6 +870,7 @@ function App() {
                 room={roomContext}
                 memberCount={activeMembers.length}
                 isAdmin={isRoomAdmin}
+                currentUserId={currentUser.id}
                 expenses={expenses}
                 needToPay={needToPay}
                 needToReceive={needToReceive}
@@ -846,6 +882,8 @@ function App() {
                 onRejectRequest={(id) => void handleDecideRequest(id, 'reject')}
                 onApprovePayment={(id) => void handleDecidePayment(id, 'approve')}
                 onRejectPayment={(id) => void handleDecidePayment(id, 'reject')}
+                onApproveVoid={(id) => void handleDecideVoidRequest(id, 'approve')}
+                onRejectVoid={(id) => void handleDecideVoidRequest(id, 'reject')}
                 onAdd={() => setOverlay('add')}
                 onPay={(target) => {
                   setPaymentTarget(target)
@@ -905,10 +943,12 @@ function App() {
         <ExpenseDetails
           expense={selectedExpense}
           currentUserId={currentUser.id}
+          isAdmin={isRoomAdmin}
           onClose={() => setOverlay(null)}
           onEdit={() => setOverlay('edit')}
           onHistory={() => void handleOpenHistory()}
           onVoid={() => void handleVoidExpense(selectedExpense.apiId)}
+          onDecideVoid={(decision) => void handleDecideVoidRequest(selectedExpense.apiId, decision)}
         />
       )}
 
@@ -1408,6 +1448,7 @@ function Home({
   room,
   memberCount,
   isAdmin,
+  currentUserId,
   expenses,
   needToPay,
   needToReceive,
@@ -1419,6 +1460,8 @@ function Home({
   onRejectRequest,
   onApprovePayment,
   onRejectPayment,
+  onApproveVoid,
+  onRejectVoid,
   onAdd,
   onPay,
   onExpense,
@@ -1428,6 +1471,7 @@ function Home({
   room: RoomContext
   memberCount: number
   isAdmin: boolean
+  currentUserId: string
   expenses: Expense[]
   needToPay: PaymentRow[]
   needToReceive: PaymentRow[]
@@ -1439,6 +1483,8 @@ function Home({
   onRejectRequest: (id: string) => void
   onApprovePayment: (id: string) => void
   onRejectPayment: (id: string) => void
+  onApproveVoid: (id: string) => void
+  onRejectVoid: (id: string) => void
   onAdd: () => void
   onPay: (target: PaymentRow) => void
   onExpense: (expense: Expense) => void
@@ -1449,6 +1495,9 @@ function Home({
   const toReceive = needToReceive.reduce((total, row) => total + row.amount, 0)
   const balance = toReceive - toPay
   const balanceLabel = balance === 0 ? '₹0' : `${balance > 0 ? '+' : '-'}${money(Math.abs(balance))}`
+  const pendingVoidRequests = expenses.filter(
+    (e) => e.payerId === currentUserId && e.voidRequest?.status === 'pending'
+  )
 
   return (
     <div className="home-stack">
@@ -1476,6 +1525,30 @@ function Home({
           + Add Expense
         </button>
       </section>
+
+      {/* PENDING VOID REQUESTS (Payer Approval Needed) */}
+      {pendingVoidRequests.length > 0 && (
+        <section className="alert-banner payment-alert">
+          <div className="alert-left">
+            <span className="pill-badge dark">Void Request — Your Approval Needed</span>
+            <strong>{pendingVoidRequests.length} pending void {pendingVoidRequests.length === 1 ? 'request' : 'requests'}</strong>
+            <p>An admin requested to void an expense you paid for. Confirm below to void it or decline to keep it.</p>
+          </div>
+          <div className="alert-actions">
+            {pendingVoidRequests.map((exp) => (
+              <div key={exp.id} className="req-action-pill payment-pill">
+                <span>{exp.voidRequest?.requestedBy} wants to void <strong>"{exp.title}"</strong> ({money(exp.amount)})</span>
+                <button className="btn-approve" onClick={() => onApproveVoid(exp.apiId)}>
+                  ✓ Approve Void
+                </button>
+                <button className="btn-reject" onClick={() => onRejectVoid(exp.apiId)}>
+                  ✕ Decline
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ADMIN JOIN REQUESTS BANNER */}
       {isAdmin && joinRequests.length > 0 && (
@@ -1784,6 +1857,12 @@ function formatActivity(event: ApiActivity): { title: string; detail: string } {
     const paise = (event.previousValues?.amountPaise as number) || (event.newValues?.amountPaise as number) || 0
     const moneyStr = paise ? ` · ₹${(paise / 100).toLocaleString('en-IN')}` : ''
     return { title: `${actor} voided an expense`, detail: `Voided "${desc}"${moneyStr}` }
+  }
+  if (action === 'expense.void_requested') {
+    return { title: `${actor} requested to void an expense`, detail: 'Pending payer confirmation' }
+  }
+  if (action === 'expense.void_rejected') {
+    return { title: `${actor} declined void request`, detail: 'Expense void request dismissed' }
   }
   if (action === 'payment.requested' || action === 'payment.created') {
     const paise = (event.newValues?.amountPaise as number) || 0
@@ -2131,21 +2210,26 @@ function AddExpense({
 function ExpenseDetails({
   expense,
   currentUserId,
+  isAdmin,
   onClose,
   onEdit,
   onHistory,
   onVoid,
+  onDecideVoid,
 }: {
   expense: Expense
   currentUserId: string
+  isAdmin: boolean
   onClose: () => void
   onEdit: () => void
   onHistory: () => void
   onVoid: () => void
+  onDecideVoid: (decision: 'approve' | 'reject') => void
 }) {
   const [confirmVoid, setConfirmVoid] = useState(false)
   const share = expense.amount / expense.participantCount
   const isPayer = currentUserId === expense.payerId
+  const hasPendingVoid = expense.voidRequest?.status === 'pending'
 
   return (
     <Modal title="Expense Details" onClose={onClose}>
@@ -2155,6 +2239,26 @@ function ExpenseDetails({
           <div className="details-hero-amount">{money(expense.amount)}</div>
           {expense.edited && <span className="pill-badge sm">Edited</span>}
         </div>
+
+        {hasPendingVoid && (
+          <div className="confirm-void-box" style={{ borderColor: 'var(--ink)' }}>
+            <p>
+              Admin <strong>{expense.voidRequest?.requestedBy}</strong> requested to void this expense.
+            </p>
+            {isPayer ? (
+              <div className="btn-pair">
+                <button className="btn-primary danger" onClick={() => onDecideVoid('approve')}>
+                  Approve Void
+                </button>
+                <button className="btn-secondary" onClick={() => onDecideVoid('reject')}>
+                  Decline
+                </button>
+              </div>
+            ) : (
+              <small style={{ color: 'var(--ink-muted)' }}>Waiting for {expense.paidBy}'s confirmation.</small>
+            )}
+          </div>
+        )}
 
         <div className="details-table">
           <div className="d-row">
@@ -2190,14 +2294,18 @@ function ExpenseDetails({
           </button>
         </div>
 
-        {isPayer && (
+        {!hasPendingVoid && (isPayer || isAdmin) && (
           <div className="void-area">
             {confirmVoid ? (
               <div className="confirm-void-box">
-                <p>Voiding will cancel this expense of {money(expense.amount)} from all balances.</p>
+                <p>
+                  {isPayer
+                    ? `Voiding will cancel this expense of ${money(expense.amount)} from all balances.`
+                    : `Requesting void will ask ${expense.paidBy} for confirmation before voiding this expense.`}
+                </p>
                 <div className="btn-pair">
                   <button className="btn-primary danger" onClick={onVoid}>
-                    Confirm Void
+                    {isPayer ? 'Confirm Void' : 'Send Void Request'}
                   </button>
                   <button className="btn-secondary" onClick={() => setConfirmVoid(false)}>
                     Cancel
@@ -2206,7 +2314,7 @@ function ExpenseDetails({
               </div>
             ) : (
               <button className="ghost-btn danger" onClick={() => setConfirmVoid(true)}>
-                Void Expense
+                {isPayer ? 'Void Expense' : 'Request to Void Expense'}
               </button>
             )}
           </div>
