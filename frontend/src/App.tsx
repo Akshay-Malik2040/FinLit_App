@@ -156,6 +156,7 @@ function App() {
   const [outgoingPayments, setOutgoingPayments] = useState<ApiPendingPayment[]>([])
   // PWA Install Prompt State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
+  const [isBootstrapping, setIsBootstrapping] = useState(true)
 
   function showToast(message: string) {
     setToast(message)
@@ -180,57 +181,42 @@ function App() {
     }
   }, [])
 
-  // 1. Initial auth check
+  // 1. Initial auth check & room bootstrap (Atomic)
   useEffect(() => {
     let isMounted = true
-    getCurrentUser()
-      .then((session) => {
-        if (isMounted) {
-          setCurrentUser(session.user)
-          setAuthStatus('ready')
+
+    const bootstrap = async () => {
+      try {
+        const session = await getCurrentUser()
+        if (!isMounted) return
+        setCurrentUser(session.user)
+
+        const roomsData = await listRooms().catch(() => ({ rooms: [] }))
+        if (!isMounted) return
+        setUserRooms(roomsData.rooms)
+
+        const activeRooms = roomsData.rooms.filter((r) => r.status === 'active')
+        if (activeRooms.length > 0) {
+          setActiveRoomId(activeRooms[0].roomId.publicId)
+          setIsLoadingRoom(true)
         }
-      })
-      .catch(() => {
+        setAuthStatus('ready')
+      } catch {
         if (isMounted) {
           setAuthStatus('loggedOut')
         }
-      })
+      } finally {
+        if (isMounted) {
+          setIsBootstrapping(false)
+        }
+      }
+    }
+
+    void bootstrap()
     return () => {
       isMounted = false
     }
   }, [])
-
-  // 2. Load user's rooms once authenticated
-  useEffect(() => {
-    if (authStatus !== 'ready' || !currentUser) return
-    let isMounted = true
-
-    const loadRooms = async () => {
-      try {
-        const result = await listRooms()
-        if (!isMounted) return
-        setUserRooms(result.rooms)
-
-        const activeRooms = result.rooms.filter((r) => r.status === 'active')
-        if (activeRooms.length > 0) {
-          setActiveRoomId((prev) => {
-            if (prev && activeRooms.some((r) => r.roomId?.publicId === prev)) return prev
-            return activeRooms[0].roomId.publicId
-          })
-        } else {
-          setActiveRoomId(null)
-          setRoomContext(null)
-        }
-      } catch {
-        if (isMounted) showToast('Could not load your rooms list.')
-      }
-    }
-
-    void loadRooms()
-    return () => {
-      isMounted = false
-    }
-  }, [authStatus, currentUser])
 
   // 3. Polling for pending approval when user has no active rooms but has pending ones
   useEffect(() => {
@@ -728,12 +714,12 @@ function App() {
   }
 
   // 1. Initial Loading State
-  if (authStatus === 'checking') {
+  if (authStatus === 'checking' || isBootstrapping || (isLoadingRoom && activeRoomId && !roomContext)) {
     return (
       <div className="modern-splash">
         <div className="modern-splash-card">
           <div className="modern-spinner" />
-          <p>Connecting to FinLit...</p>
+          <p>{activeRoomId ? 'Loading ledger...' : 'Connecting to FinLit...'}</p>
         </div>
       </div>
     )
