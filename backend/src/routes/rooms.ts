@@ -1,9 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
 import { Router } from 'express'
 import { isValidObjectId } from 'mongoose'
 import { z } from 'zod'
+import { env } from '../config/env.js'
 import { Room } from '../models/Room.js'
+import { User } from '../models/User.js'
 import { Membership } from '../models/Membership.js'
 import { AuditEvent } from '../models/AuditEvent.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -119,20 +122,83 @@ router.post('/join', asyncHandler(async (req, res) => {
   if (!input.success) throw new HttpError(400, 'INVALID_ROOM_ID', 'Please enter a valid Room ID.')
   const room = await Room.findOne({ publicId: input.data.roomId.toUpperCase(), status: 'active' })
   if (!room) throw new HttpError(404, 'ROOM_NOT_FOUND', 'This room could not be found.')
-  const existing = await Membership.findOne({ roomId: room._id, userId: req.userId })
-  if (existing) {
-    if (existing.status === 'left') {
-      existing.status = 'pending'
-      existing.leftAt = undefined
-      await existing.save()
-      await AuditEvent.create({ roomId: room._id, entityType: 'membership', entityId: existing._id, action: 'membership.requested', actorId: req.userId })
-      return ok(res, { membership: existing })
+
+  const currentUser = await User.findById(req.userId)
+  if (!currentUser) throw new HttpError(401, 'UNAUTHENTICATED', 'Invalid user session.')
+
+  // Check if current user already has a membership in this room
+  const directMembership = await Membership.findOne({ roomId: room._id, userId: req.userId })
+  if (directMembership) {
+    if (directMembership.status === 'left') {
+      directMembership.status = 'pending'
+      directMembership.leftAt = undefined
+      await directMembership.save()
+      await AuditEvent.create({ roomId: room._id, entityType: 'membership', entityId: directMembership._id, action: 'membership.requested', actorId: req.userId })
+      return ok(res, { membership: directMembership, user: { id: currentUser.id, displayName: currentUser.displayName } })
     }
-    return ok(res, { membership: existing })
+    return ok(res, { membership: directMembership, user: { id: currentUser.id, displayName: currentUser.displayName } })
   }
-  const membership = await Membership.create({ roomId: room._id, userId: req.userId, status: 'pending', role: 'member' })
-  await AuditEvent.create({ roomId: room._id, entityType: 'membership', entityId: membership._id, action: 'membership.requested', actorId: req.userId })
-  ok(res, { membership }, 201)
+
+  // Check if an existing member in this room already has the same display name (case-insensitive)
+  const roomMemberships = await Membership.find({
+    roomId: room._id,
+  }).populate('userId', 'displayName')
+
+  const targetName = currentUser.displayName.trim().toLowerCase()
+  const matchingMember = roomMemberships.find((m) => {
+    const memberUser = m.userId as unknown as { _id: unknown; displayName?: string } | null
+    return memberUser?.displayName?.trim().toLowerCase() === targetName
+  })
+
+  if (matchingMember && matchingMember.userId) {
+    const matchedUser = matchingMember.userId as unknown as { _id: { toString: () => string }; displayName: string }
+    const matchedUserId = matchedUser._id.toString()
+
+    // Seamlessly reclaim session for this unique roommate identity
+    const token = jwt.sign({}, env.JWT_SECRET, {
+      subject: matchedUserId,
+      expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+    })
+
+    res.cookie('session', token, {
+      httpOnly: true,
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      secure: env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    })
+
+    // If their membership status was 'left', reactivate it
+    if (matchingMember.status === 'left') {
+      matchingMember.status = 'active'
+      matchingMember.leftAt = undefined
+      await matchingMember.save()
+    }
+
+    return ok(res, {
+      membership: matchingMember,
+      token,
+      user: { id: matchedUserId, displayName: matchedUser.displayName },
+      reclaimed: true,
+    })
+  }
+
+  // Name is new/unique in this room -> create new pending membership
+  const membership = await Membership.create({
+    roomId: room._id,
+    userId: req.userId,
+    status: 'pending',
+    role: 'member',
+  })
+
+  await AuditEvent.create({
+    roomId: room._id,
+    entityType: 'membership',
+    entityId: membership._id,
+    action: 'membership.requested',
+    actorId: req.userId,
+  })
+
+  ok(res, { membership, user: { id: currentUser.id, displayName: currentUser.displayName } }, 201)
 }))
 
 router.get('/:roomId', getRoomForMember, asyncHandler(async (_req, res) => {
@@ -152,6 +218,25 @@ router.patch('/:roomId/requests/:membershipId', getRoomForMember, requireAdmin, 
   const membership = await Membership.findOne({ _id: req.params.membershipId, roomId: res.locals.room._id, status: 'pending' })
   if (!membership) throw new HttpError(404, 'REQUEST_NOT_FOUND', 'This join request could not be found.')
   if (action.data.action === 'approve') {
+    // Ensure no active member already has the same display name
+    const targetUser = await User.findById(membership.userId)
+    if (targetUser) {
+      const activeMembers = await Membership.find({
+        roomId: res.locals.room._id,
+        status: 'active',
+        _id: { $ne: membership._id },
+      }).populate('userId', 'displayName')
+
+      const isDuplicate = activeMembers.some((m) => {
+        const u = m.userId as unknown as { displayName?: string } | null
+        return u?.displayName?.trim().toLowerCase() === targetUser.displayName.trim().toLowerCase()
+      })
+
+      if (isDuplicate) {
+        throw new HttpError(400, 'DUPLICATE_NAME', `A member named "${targetUser.displayName}" is already active in this room. Roommate names must be unique.`)
+      }
+    }
+
     membership.status = 'active'
     membership.joinedAt = new Date()
     await membership.save()

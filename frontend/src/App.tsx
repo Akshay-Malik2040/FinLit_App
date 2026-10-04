@@ -490,19 +490,27 @@ function App() {
     setIsLoadingRoom(true)
     try {
       const session = await createSession(displayName)
-      await joinRoom(roomId)
-      showToast(`Join request submitted for room ${roomId}`)
+      const joinRes = await joinRoom(roomId)
+
+      const effectiveUser = joinRes.user || session.user
+      setCurrentUser(effectiveUser)
 
       const updatedRooms = await listRooms()
       setUserRooms(updatedRooms.rooms)
       const active = updatedRooms.rooms.filter((r) => r.status === 'active')
+
       if (active.length > 0) {
         setActiveRoomId(active[0].roomId.publicId)
+        if (joinRes.reclaimed) {
+          showToast(`Welcome back, ${effectiveUser.displayName}! Reconnected to room.`)
+        } else {
+          showToast(`Joined room ${roomId}`)
+        }
       } else {
         setActiveRoomId(null)
         setRoomContext(null)
+        showToast(`Join request submitted for room ${roomId}`)
       }
-      setCurrentUser(session.user)
       setAuthStatus('ready')
     } catch (err: unknown) {
       setIsLoadingRoom(false)
@@ -658,10 +666,19 @@ function App() {
 
   const handleJoinRoomInside = async (code: string) => {
     try {
-      await joinRoom(code)
-      showToast(`Join request submitted for room ${code}`)
+      const res = await joinRoom(code)
+      if (res.reclaimed && res.user) {
+        setCurrentUser(res.user)
+      }
       const updatedRooms = await listRooms()
       setUserRooms(updatedRooms.rooms)
+      const active = updatedRooms.rooms.filter((r) => r.status === 'active')
+      if (active.some((r) => r.roomId?.publicId === code)) {
+        setActiveRoomId(code)
+        showToast(res.reclaimed ? 'Reconnected to room!' : 'Room active!')
+      } else {
+        showToast(`Join request submitted for room ${code}`)
+      }
       setOverlay(null)
     } catch {
       showToast('Could not find room with that ID.')

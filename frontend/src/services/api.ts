@@ -297,11 +297,20 @@ export function decidePayment(roomId: string, paymentId: string, action: 'approv
   })
 }
 
-export function joinRoom(roomId: string) {
-  return request<{ membership: unknown }>(`/api/rooms/join`, {
+export async function joinRoom(roomId: string) {
+  const data = await request<{
+    membership: ApiRoomMembership
+    token?: string
+    user?: { id: string; displayName: string }
+    reclaimed?: boolean
+  }>(`/api/rooms/join`, {
     method: 'POST',
     body: JSON.stringify({ roomId }),
   })
+  if (data.token) {
+    setStoredToken(data.token)
+  }
+  return data
 }
 
 export const apiIsConfigured = true
