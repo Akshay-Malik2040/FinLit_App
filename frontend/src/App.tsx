@@ -33,7 +33,7 @@ import {
 } from './services/api'
 
 type View = 'home' | 'activity' | 'room'
-type Overlay = 'add' | 'expense' | 'edit' | 'history' | 'pay' | 'rooms' | 'leave' | 'create-room' | 'join-room' | null
+type Overlay = 'add' | 'expense' | 'edit' | 'history' | 'pay' | 'rooms' | 'leave' | null
 
 type Expense = {
   id: string
@@ -765,73 +765,20 @@ function App() {
           pendingRooms={pendingMemberships}
           isChecking={isCheckingApproval}
           onCheckStatus={handleManualCheckApproval}
-          onCreateRoom={() => setOverlay('create-room')}
-          onJoinAnother={() => setOverlay('join-room')}
+          onOpenRooms={() => setOverlay('rooms')}
           onLogout={handleLogout}
         />
       )
     }
 
     return (
-      <div className="app-shell">
-        <header className="topbar">
-          <div className="brand">
-            <span className="brand-logo">fl</span>
-            <div className="brand-title">
-              <strong>FinLit</strong>
-              <small>Shared Ledger</small>
-            </div>
-          </div>
-          <div className="user-avatar-badge">
-            <span className="avatar-disc">{currentUser.displayName[0]?.toUpperCase()}</span>
-            <span className="user-label">{currentUser.displayName}</span>
-          </div>
-        </header>
-
-        <main className="main-content">
-          <div className="card onboarding-card">
-            <div className="pill-badge muted">Setup Needed</div>
-            <h2>Welcome, {currentUser.displayName}</h2>
-            <p className="subtitle">
-              You are not currently in an active room. Create a new flat for your roommates or join an existing flat using a Room ID.
-            </p>
-
-            <div className="action-cards-grid">
-              <button className="action-card" onClick={() => setOverlay('create-room')}>
-                <div className="action-card-top">
-                  <span className="card-tag">Option 1</span>
-                  <strong>Create a Room</strong>
-                </div>
-                <p>Start a new ledger where you manage members and records.</p>
-                <span className="card-link">Create Room →</span>
-              </button>
-
-              <button className="action-card" onClick={() => setOverlay('join-room')}>
-                <div className="action-card-top">
-                  <span className="card-tag">Option 2</span>
-                  <strong>Join with Room ID</strong>
-                </div>
-                <p>Enter an 8-character room code (requires admin approval).</p>
-                <span className="card-link">Join Room →</span>
-              </button>
-            </div>
-
-            <div className="card-bottom-actions">
-              <button className="ghost-btn" onClick={() => void handleLogout()}>
-                Sign Out
-              </button>
-            </div>
-          </div>
-        </main>
-
-        {overlay === 'create-room' && (
-          <CreateRoomModal onClose={() => setOverlay(null)} onSubmit={handleCreateRoomInside} />
-        )}
-        {overlay === 'join-room' && (
-          <JoinRoomModal onClose={() => setOverlay(null)} onSubmit={handleJoinRoomInside} />
-        )}
-        {toast && <div className="modern-toast" role="status">{toast}</div>}
-      </div>
+      <FirstPage
+        error={loginError}
+        initialName={currentUser.displayName}
+        onCreateRoom={handleCreateRoomFirstPage}
+        onJoinRoom={handleJoinRoomFirstPage}
+        onRecoverRoom={handleRecoverRoomFirstPage}
+      />
     )
   }
 
@@ -1033,11 +980,13 @@ function App() {
 // -------------------------------------------------------------------------
 function FirstPage({
   error,
+  initialName = '',
   onCreateRoom,
   onJoinRoom,
   onRecoverRoom,
 }: {
   error: string
+  initialName?: string
   onCreateRoom: (params: {
     displayName: string
     roomName: string
@@ -1052,7 +1001,7 @@ function FirstPage({
   }) => Promise<void>
 }) {
   const [activeTab, setActiveTab] = useState<'create' | 'join' | 'recover'>('create')
-  const [name, setName] = useState('')
+  const [name, setName] = useState(initialName)
   const [roomName, setRoomName] = useState('')
   const [roomId, setRoomId] = useState('')
   const [recoveryPassword, setRecoveryPassword] = useState('')
@@ -1360,16 +1309,14 @@ function PendingApprovalView({
   pendingRooms,
   isChecking,
   onCheckStatus,
-  onCreateRoom,
-  onJoinAnother,
+  onOpenRooms,
   onLogout,
 }: {
   currentUser: CurrentUser
   pendingRooms: ApiRoomMembership[]
   isChecking: boolean
   onCheckStatus: () => Promise<void>
-  onCreateRoom: () => void
-  onJoinAnother: () => void
+  onOpenRooms: () => void
   onLogout: () => void
 }) {
   return (
@@ -1421,11 +1368,8 @@ function PendingApprovalView({
               {isChecking ? 'Checking status...' : 'Check Status Now'}
             </button>
             <div className="secondary-row">
-              <button className="btn-secondary" onClick={onCreateRoom}>
-                + Create a Room
-              </button>
-              <button className="btn-secondary" onClick={onJoinAnother}>
-                Join Another Room
+              <button className="btn-secondary" onClick={onOpenRooms}>
+                + Create or Join Another Room
               </button>
             </div>
             <button className="ghost-btn" onClick={onLogout}>
@@ -2722,133 +2666,6 @@ function RoomSwitcher({
       <button className="ghost-btn danger full" onClick={onLogout}>
         Sign Out
       </button>
-    </Modal>
-  )
-}
-
-// -------------------------------------------------------------------------
-// ONBOARDING CREATE & JOIN MODALS
-// -------------------------------------------------------------------------
-function CreateRoomModal({
-  onClose,
-  onSubmit,
-}: {
-  onClose: () => void
-  onSubmit: (name: string, recoveryPassword?: string, recoveryQuestion?: string) => Promise<void>
-}) {
-  const [name, setName] = useState('')
-  const [recoveryPassword, setRecoveryPassword] = useState('')
-  const [recoveryQuestion, setRecoveryQuestion] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  return (
-    <Modal title="Create a Room" onClose={onClose}>
-      <form
-        className="modal-form"
-        onSubmit={async (e) => {
-          e.preventDefault()
-          if (!name.trim() || submitting) return
-          setSubmitting(true)
-          try {
-            await onSubmit(
-              name.trim(),
-              recoveryPassword.trim() || undefined,
-              recoveryQuestion.trim() || undefined
-            )
-          } finally {
-            setSubmitting(false)
-          }
-        }}
-      >
-        <div className="input-group">
-          <label htmlFor="modal-room-name">Room / Flat Name</label>
-          <input
-            id="modal-room-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Green Park 402"
-            autoFocus
-            required
-            maxLength={60}
-          />
-        </div>
-
-        <div className="input-group">
-          <label htmlFor="modal-recovery-pass">
-            Recovery Password / Key <span className="field-optional">(Optional)</span>
-          </label>
-          <input
-            id="modal-recovery-pass"
-            type="password"
-            value={recoveryPassword}
-            onChange={(e) => setRecoveryPassword(e.target.value)}
-            placeholder="Optional secret key to reclaim admin access"
-            maxLength={80}
-          />
-        </div>
-
-        <div className="input-group">
-          <label htmlFor="modal-recovery-q">
-            Security Question / Hint <span className="field-optional">(Optional)</span>
-          </label>
-          <input
-            id="modal-recovery-q"
-            type="text"
-            value={recoveryQuestion}
-            onChange={(e) => setRecoveryQuestion(e.target.value)}
-            placeholder="e.g. Secret nickname"
-            maxLength={120}
-          />
-        </div>
-
-        <button className="btn-primary submit-btn" type="submit" disabled={submitting}>
-          {submitting ? 'Creating...' : 'Create Room →'}
-        </button>
-      </form>
-    </Modal>
-  )
-}
-
-function JoinRoomModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (code: string) => Promise<void> }) {
-  const [code, setCode] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  return (
-    <Modal title="Join with Room ID" onClose={onClose}>
-      <form
-        className="modal-form"
-        onSubmit={async (e) => {
-          e.preventDefault()
-          if (!code.trim() || submitting) return
-          setSubmitting(true)
-          try {
-            await onSubmit(code.trim().toUpperCase())
-          } finally {
-            setSubmitting(false)
-          }
-        }}
-      >
-        <div className="form-info-box notice" style={{ marginBottom: 16 }}>
-          <span className="pill-badge dark">Approval Required</span>
-          <p>The room admin will need to approve your join request.</p>
-        </div>
-
-        <div className="input-group">
-          <label htmlFor="modal-join-code">Room ID Code</label>
-          <input
-            id="modal-join-code"
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="e.g. 8278F02E"
-            className="mono-code-input"
-            autoFocus
-            required
-            maxLength={12}
-          />
-        </div>
-        <button className="btn-primary submit-btn" type="submit" disabled={submitting}>
-          {submitting ? 'Submitting...' : 'Request to Join →'}
-        </button>
-      </form>
     </Modal>
   )
 }
