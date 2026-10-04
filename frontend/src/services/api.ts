@@ -69,6 +69,25 @@ type ApiResponse<T> =
   | { success: true; data: T }
   | { success: false; error: { code: string; message: string } }
 
+const TOKEN_KEY = 'finlit_auth_token'
+
+export function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setStoredToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // ignore local storage restrictions
+  }
+}
+
 export class ApiError extends Error {
   code: string
   constructor(code: string, message: string) {
@@ -78,12 +97,47 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
-  })
-  const body = (await response.json()) as ApiResponse<T>
+  const token = getStoredToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string>),
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const url = `${API_URL}${path}`
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      credentials: 'include',
+      headers,
+    })
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    if (!API_URL && import.meta.env.PROD) {
+      throw new ApiError(
+        'CONFIG_ERROR',
+        'Backend API URL is not set. Please add VITE_API_URL in your Vercel Environment Variables and redeploy.'
+      )
+    }
+    throw new ApiError(
+      'NETWORK_ERROR',
+      `Cannot connect to server (${API_URL || 'local'}). If Render is waking up from sleep, please wait 30 seconds and retry. (${errorMsg})`
+    )
+  }
+
+  let body: ApiResponse<T>
+  try {
+    body = (await response.json()) as ApiResponse<T>
+  } catch {
+    throw new ApiError(
+      'INVALID_RESPONSE',
+      `Server returned an invalid response (${response.status} ${response.statusText}). Check that VITE_API_URL points to your backend.`
+    )
+  }
+
   if (!response.ok || !body.success) {
     throw new ApiError(
       body.success ? 'REQUEST_FAILED' : body.error.code,
@@ -93,18 +147,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body.data
 }
 
-export function createSession(displayName: string) {
-  return request<{ user: { id: string; displayName: string } }>('/api/auth/session', {
+export async function createSession(displayName: string) {
+  const data = await request<{ user: { id: string; displayName: string }; token?: string }>('/api/auth/session', {
     method: 'POST',
     body: JSON.stringify({ displayName }),
   })
+  if (data.token) {
+    setStoredToken(data.token)
+  }
+  return data
 }
 
 export function getCurrentUser() {
   return request<{ user: { id: string; displayName: string } }>('/api/auth/me')
 }
 
-export function logout() {
+export async function logout() {
+  setStoredToken(null)
   return request<{ loggedOut: boolean }>('/api/auth/logout', { method: 'POST' })
 }
 

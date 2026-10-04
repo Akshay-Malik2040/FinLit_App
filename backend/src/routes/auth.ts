@@ -15,7 +15,7 @@ router.post('/session', asyncHandler(async (req, res) => {
   const user = await User.create({ displayName: input.data.displayName })
   const token = jwt.sign({}, env.JWT_SECRET, { subject: user.id, expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'] })
   res.cookie('session', token, { httpOnly: true, sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax', secure: env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 })
-  ok(res, { user: { id: user.id, displayName: user.displayName } }, 201)
+  ok(res, { user: { id: user.id, displayName: user.displayName }, token }, 201)
 }))
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {

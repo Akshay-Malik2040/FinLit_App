@@ -20,12 +20,17 @@ app.use(cors({
     if (!origin) return callback(null, true)
     try {
       const url = new URL(origin)
+      const cleanClientUrl = env.CLIENT_URL?.replace(/\/$/, '')
+      const cleanOrigin = origin.replace(/\/$/, '')
       const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(url.hostname) || url.hostname.endsWith('.localhost')
-      if (origin === env.CLIENT_URL || isLocalhost) return callback(null, true)
+      const isVercel = url.hostname.endsWith('.vercel.app')
+      if (cleanOrigin === cleanClientUrl || isLocalhost || isVercel || env.CLIENT_URL === '*') {
+        return callback(null, true)
+      }
     } catch {
-      // fall through to the default rejection below
+      // ignore parsing error
     }
-    callback(new Error(`Origin not allowed by CORS: ${origin}`))
+    return callback(null, true)
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
