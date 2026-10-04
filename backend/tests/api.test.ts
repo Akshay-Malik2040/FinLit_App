@@ -8,7 +8,7 @@ describe('HTTP API basic endpoints', () => {
     const res = await request(app).get('/')
     expect(res.status).toBe(200)
     expect(res.body.success).toBe(true)
-    expect(res.body.data.service).toBe('Flatmate Finance API')
+    expect(res.body.data.service).toBe('FinLit API')
   })
 
   it('GET /health returns status ok', async () => {

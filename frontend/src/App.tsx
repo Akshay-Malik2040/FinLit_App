@@ -20,6 +20,8 @@ import {
   listRooms,
   logout,
   recordPayment,
+  recoverRoom,
+  removeMember,
   updateExpense,
   voidExpense,
   type ApiActivity,
@@ -50,9 +52,22 @@ type Expense = {
 
 type RoomMember = {
   id: string
+  membershipId: string
   name: string
   role: 'admin' | 'member'
   status: 'active' | 'left'
+}
+
+type RoomContext = {
+  id: string
+  name: string
+  recoveryQuestion?: string
+  dissolveRequest?: {
+    requestedBy: string
+    requestedAt: string
+    status: 'pending' | 'approved' | 'rejected'
+    approvals: Array<{ userId: string; approved: boolean; decidedAt?: string }>
+  }
 }
 
 type PaymentRow = {
@@ -120,7 +135,7 @@ function App() {
   // Room state
   const [userRooms, setUserRooms] = useState<ApiRoomMembership[]>([])
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
-  const [roomContext, setRoomContext] = useState<{ id: string; name: string } | null>(null)
+  const [roomContext, setRoomContext] = useState<RoomContext | null>(null)
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([])
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
@@ -236,10 +251,16 @@ function App() {
         ])
 
         if (!isMounted) return
-        setRoomContext({ id: roomData.room.publicId, name: roomData.room.name })
+        setRoomContext({
+          id: roomData.room.publicId,
+          name: roomData.room.name,
+          recoveryQuestion: roomData.room.recoveryQuestion,
+          dissolveRequest: roomData.room.dissolveRequest,
+        })
 
         const loadedMembers: RoomMember[] = roomData.members.map((m) => ({
           id: m.userId._id,
+          membershipId: m._id,
           name: m.userId.displayName,
           role: m.role,
           status: m.status,
@@ -332,9 +353,16 @@ function App() {
         getActivity(activeRoomId),
       ])
 
-      setRoomContext({ id: roomData.room.publicId, name: roomData.room.name })
+      setRoomContext({
+        id: roomData.room.publicId,
+        name: roomData.room.name,
+        recoveryQuestion: roomData.room.recoveryQuestion,
+        dissolveRequest: roomData.room.dissolveRequest,
+      })
+
       const loadedMembers: RoomMember[] = roomData.members.map((m) => ({
         id: m.userId._id,
+        membershipId: m._id,
         name: m.userId.displayName,
         role: m.role,
         status: m.status,
@@ -415,9 +443,13 @@ function App() {
   const handleCreateRoomFirstPage = async ({
     displayName,
     roomName,
+    recoveryPassword,
+    recoveryQuestion,
   }: {
     displayName: string
     roomName: string
+    recoveryPassword?: string
+    recoveryQuestion?: string
   }) => {
     setLoginError('')
     try {
@@ -425,7 +457,7 @@ function App() {
       setCurrentUser(session.user)
       setAuthStatus('ready')
 
-      const res = await createRoom(roomName)
+      const res = await createRoom(roomName, recoveryPassword, recoveryQuestion)
       const newRoom = res.room
       showToast(`Created room "${newRoom.name}"`)
 
@@ -467,6 +499,35 @@ function App() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not join room'
+      setLoginError(msg)
+      throw err
+    }
+  }
+
+  // Recover room from First Page
+  const handleRecoverRoomFirstPage = async ({
+    displayName,
+    roomId,
+    recoveryPassword,
+  }: {
+    displayName: string
+    roomId: string
+    recoveryPassword: string
+  }) => {
+    setLoginError('')
+    try {
+      const session = await createSession(displayName)
+      setCurrentUser(session.user)
+      setAuthStatus('ready')
+
+      const res = await recoverRoom(roomId, recoveryPassword)
+      showToast(`Room "${res.room.name}" recovered! Admin access granted.`)
+
+      const updatedRooms = await listRooms()
+      setUserRooms(updatedRooms.rooms)
+      setActiveRoomId(res.room.publicId)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not recover room'
       setLoginError(msg)
       throw err
     }
@@ -561,9 +622,20 @@ function App() {
     }
   }
 
-  const handleCreateRoomInside = async (name: string) => {
+  const handleRemoveMember = async (membershipId: string, memberName: string) => {
+    if (!roomContext) return
     try {
-      const res = await createRoom(name)
+      await removeMember(roomContext.id, membershipId)
+      showToast(`Removed ${memberName} from room`)
+      await refreshRoomData()
+    } catch {
+      showToast('Could not remove member.')
+    }
+  }
+
+  const handleCreateRoomInside = async (name: string, recoveryPassword?: string, recoveryQuestion?: string) => {
+    try {
+      const res = await createRoom(name, recoveryPassword, recoveryQuestion)
       const newRoom = res.room
       showToast(`Created room "${newRoom.name}"`)
       const updatedRooms = await listRooms()
@@ -590,17 +662,22 @@ function App() {
   const handleLeaveRoom = async () => {
     if (!roomContext) return
     try {
-      await leaveRoom(roomContext.id)
-      showToast(`You left ${roomContext.name}`)
+      const res = await leaveRoom(roomContext.id)
       setOverlay(null)
-      const updatedRooms = await listRooms()
-      setUserRooms(updatedRooms.rooms)
-      const remainingActive = updatedRooms.rooms.filter((r) => r.status === 'active')
-      if (remainingActive.length > 0) {
-        setActiveRoomId(remainingActive[0].roomId.publicId)
+      if (res.requiresApproval) {
+        showToast('Dissolution request submitted. Waiting for other members to approve.')
+        await refreshRoomData()
       } else {
-        setActiveRoomId(null)
-        setRoomContext(null)
+        showToast(`You left ${roomContext.name}`)
+        const updatedRooms = await listRooms()
+        setUserRooms(updatedRooms.rooms)
+        const remainingActive = updatedRooms.rooms.filter((r) => r.status === 'active')
+        if (remainingActive.length > 0) {
+          setActiveRoomId(remainingActive[0].roomId.publicId)
+        } else {
+          setActiveRoomId(null)
+          setRoomContext(null)
+        }
       }
     } catch {
       showToast('Could not leave room.')
@@ -633,7 +710,7 @@ function App() {
       <div className="modern-splash">
         <div className="modern-splash-card">
           <div className="modern-spinner" />
-          <p>Connecting to Flatmate Finance...</p>
+          <p>Connecting to FinLit...</p>
         </div>
       </div>
     )
@@ -646,6 +723,7 @@ function App() {
         error={loginError}
         onCreateRoom={handleCreateRoomFirstPage}
         onJoinRoom={handleJoinRoomFirstPage}
+        onRecoverRoom={handleRecoverRoomFirstPage}
       />
     )
   }
@@ -672,9 +750,9 @@ function App() {
       <div className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <span className="brand-logo">ff</span>
+            <span className="brand-logo">fl</span>
             <div className="brand-title">
-              <strong>Flatmate Finance</strong>
+              <strong>FinLit</strong>
               <small>Shared Ledger</small>
             </div>
           </div>
@@ -733,14 +811,16 @@ function App() {
 
   // 4. Authenticated & Active Room View
   const activeMembers = roomMembers.filter((m) => m.status === 'active')
+  const currentMember = roomMembers.find((m) => m.id === currentUser.id)
+  const isRoomAdmin = currentMember?.role === 'admin'
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setView('home')} aria-label="Go to home">
-          <span className="brand-logo">ff</span>
+          <span className="brand-logo">fl</span>
           <div className="brand-title">
-            <strong>Flatmate Finance</strong>
+            <strong>FinLit</strong>
             <small>{roomContext?.name || 'Ledger'}</small>
           </div>
         </button>
@@ -782,6 +862,7 @@ function App() {
               <Home
                 room={roomContext}
                 memberCount={activeMembers.length}
+                isAdmin={isRoomAdmin}
                 expenses={expenses}
                 needToPay={needToPay}
                 needToReceive={needToReceive}
@@ -812,8 +893,10 @@ function App() {
                 room={roomContext}
                 members={roomMembers}
                 currentUserId={currentUser.id}
+                isAdmin={isRoomAdmin}
                 requests={joinRequests}
                 onRequest={handleDecideRequest}
+                onRemoveMember={handleRemoveMember}
                 onLeave={() => setOverlay('leave')}
                 onToast={showToast}
               />
@@ -903,6 +986,8 @@ function App() {
         <LeaveRoom
           roomId={roomContext.id}
           roomName={roomContext.name}
+          isAdmin={isRoomAdmin}
+          memberCount={activeMembers.length}
           outstandingPay={needToPay.reduce((acc, row) => acc + row.amount, 0)}
           outstandingReceive={needToReceive.reduce((acc, row) => acc + row.amount, 0)}
           onClose={() => setOverlay(null)}
@@ -916,21 +1001,34 @@ function App() {
 }
 
 // -------------------------------------------------------------------------
-// FIRST PAGE / LANDING PAGE (Create Room vs Join Room)
+// FIRST PAGE / LANDING PAGE (Create Room vs Join Room vs Recover Room)
 // -------------------------------------------------------------------------
 function FirstPage({
   error,
   onCreateRoom,
   onJoinRoom,
+  onRecoverRoom,
 }: {
   error: string
-  onCreateRoom: (params: { displayName: string; roomName: string }) => Promise<void>
+  onCreateRoom: (params: {
+    displayName: string
+    roomName: string
+    recoveryPassword?: string
+    recoveryQuestion?: string
+  }) => Promise<void>
   onJoinRoom: (params: { displayName: string; roomId: string }) => Promise<void>
+  onRecoverRoom: (params: {
+    displayName: string
+    roomId: string
+    recoveryPassword: string
+  }) => Promise<void>
 }) {
-  const [activeTab, setActiveTab] = useState<'create' | 'join'>('create')
+  const [activeTab, setActiveTab] = useState<'create' | 'join' | 'recover'>('create')
   const [name, setName] = useState('')
   const [roomName, setRoomName] = useState('')
   const [roomId, setRoomId] = useState('')
+  const [recoveryPassword, setRecoveryPassword] = useState('')
+  const [recoveryQuestion, setRecoveryQuestion] = useState('')
   const [loading, setLoading] = useState(false)
   const [localError, setLocalError] = useState('')
 
@@ -940,7 +1038,12 @@ function FirstPage({
     if (!name.trim() || !roomName.trim() || loading) return
     setLoading(true)
     try {
-      await onCreateRoom({ displayName: name.trim(), roomName: roomName.trim() })
+      await onCreateRoom({
+        displayName: name.trim(),
+        roomName: roomName.trim(),
+        recoveryPassword: recoveryPassword.trim() || undefined,
+        recoveryQuestion: recoveryQuestion.trim() || undefined,
+      })
     } catch (err: unknown) {
       setLocalError(err instanceof Error ? err.message : 'Could not create room')
     } finally {
@@ -962,13 +1065,31 @@ function FirstPage({
     }
   }
 
+  const handleRecoverSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    setLocalError('')
+    if (!name.trim() || !roomId.trim() || !recoveryPassword.trim() || loading) return
+    setLoading(true)
+    try {
+      await onRecoverRoom({
+        displayName: name.trim(),
+        roomId: roomId.trim().toUpperCase(),
+        recoveryPassword: recoveryPassword.trim(),
+      })
+    } catch (err: unknown) {
+      setLocalError(err instanceof Error ? err.message : 'Could not recover room')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <main className="landing-layout">
       <div className="landing-card-wrap">
         {/* Header */}
         <div className="landing-header">
-          <div className="logo-badge">ff</div>
-          <h1>Flatmate Finance</h1>
+          <div className="logo-badge">fl</div>
+          <h1>FinLit</h1>
           <p>A clean, calm ledger for roommates to share expenses and settle balances.</p>
         </div>
 
@@ -999,6 +1120,18 @@ function FirstPage({
               }}
             >
               Join Room
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'recover'}
+              className={`tab-pill ${activeTab === 'recover' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab('recover')
+                setLocalError('')
+              }}
+            >
+              Recover Room
             </button>
           </div>
 
@@ -1035,6 +1168,34 @@ function FirstPage({
                   placeholder="e.g. Green Park 402"
                   required
                   maxLength={80}
+                />
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="create-recovery-pass">
+                  Recovery Password / Key <span className="field-optional">(Optional)</span>
+                </label>
+                <input
+                  id="create-recovery-pass"
+                  type="password"
+                  value={recoveryPassword}
+                  onChange={(e) => setRecoveryPassword(e.target.value)}
+                  placeholder="Optional secret key to reclaim admin access"
+                  maxLength={80}
+                />
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="create-recovery-question">
+                  Security Question / Hint <span className="field-optional">(Optional)</span>
+                </label>
+                <input
+                  id="create-recovery-question"
+                  type="text"
+                  value={recoveryQuestion}
+                  onChange={(e) => setRecoveryQuestion(e.target.value)}
+                  placeholder="e.g. Secret code or flat nickname"
+                  maxLength={120}
                 />
               </div>
 
@@ -1089,20 +1250,65 @@ function FirstPage({
             </form>
           )}
 
-          {/* Sample quick names */}
-          <div className="sample-users-row">
-            <span>Quick sample:</span>
-            {['Akshay', 'Rahul', 'Priya', 'Aman'].map((sample) => (
-              <button
-                key={sample}
-                type="button"
-                className={`sample-pill ${name === sample ? 'selected' : ''}`}
-                onClick={() => setName(sample)}
-              >
-                {sample}
+          {/* Form: Recover Room */}
+          {activeTab === 'recover' && (
+            <form className="modern-form" onSubmit={handleRecoverSubmit}>
+              <div className="form-info-box notice">
+                <div className="badge-line">
+                  <span className="pill-badge dark">Reclaim Admin Access</span>
+                </div>
+                <p>
+                  Accidentally left or lost admin access? Enter the room ID and your recovery password to restore admin rights.
+                </p>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="recover-name">Your Name</label>
+                <input
+                  id="recover-name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Akshay"
+                  autoComplete="name"
+                  autoFocus
+                  required
+                  maxLength={60}
+                />
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="recover-room-id">Room ID Code</label>
+                <input
+                  id="recover-room-id"
+                  type="text"
+                  value={roomId}
+                  onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+                  placeholder="e.g. 8278F02E"
+                  className="mono-code-input"
+                  required
+                  maxLength={12}
+                />
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="recover-password">Recovery Password / Security Answer</label>
+                <input
+                  id="recover-password"
+                  type="password"
+                  value={recoveryPassword}
+                  onChange={(e) => setRecoveryPassword(e.target.value)}
+                  placeholder="Enter the recovery key set at creation"
+                  required
+                  maxLength={80}
+                />
+              </div>
+
+              <button className="btn-primary submit-btn" type="submit" disabled={loading}>
+                {loading ? 'Recovering room...' : 'Recover Room & Claim Admin →'}
               </button>
-            ))}
-          </div>
+            </form>
+          )}
 
           {(error || localError) && (
             <div className="form-error-banner" role="alert">
@@ -1118,7 +1324,6 @@ function FirstPage({
     </main>
   )
 }
-
 // -------------------------------------------------------------------------
 // PENDING APPROVAL VIEW
 // -------------------------------------------------------------------------
@@ -1143,9 +1348,9 @@ function PendingApprovalView({
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-logo">ff</span>
+          <span className="brand-logo">fl</span>
           <div className="brand-title">
-            <strong>Flatmate Finance</strong>
+            <strong>FinLit</strong>
             <small>Shared Ledger</small>
           </div>
         </div>
@@ -1230,6 +1435,7 @@ function NavButton({
 function Home({
   room,
   memberCount,
+  isAdmin,
   expenses,
   needToPay,
   needToReceive,
@@ -1247,8 +1453,9 @@ function Home({
   onExport,
   onToast,
 }: {
-  room: { id: string; name: string }
+  room: RoomContext
   memberCount: number
+  isAdmin: boolean
   expenses: Expense[]
   needToPay: PaymentRow[]
   needToReceive: PaymentRow[]
@@ -1299,7 +1506,7 @@ function Home({
       </section>
 
       {/* ADMIN JOIN REQUESTS BANNER */}
-      {joinRequests.length > 0 && (
+      {isAdmin && joinRequests.length > 0 && (
         <section className="alert-banner">
           <div className="alert-left">
             <span className="pill-badge dark">Roommate Join Request</span>
@@ -1627,6 +1834,18 @@ function formatActivity(event: ApiActivity): { title: string; detail: string } {
   if (action === 'membership.left') {
     return { title: `${actor} left the room`, detail: 'Membership archived' }
   }
+  if (action === 'membership.removed') {
+    return { title: `${actor} removed a member`, detail: 'Roommate removed from room roster' }
+  }
+  if (action === 'room.dissolve_requested') {
+    return { title: `${actor} requested to dissolve the room`, detail: 'Pending roommate consensus' }
+  }
+  if (action === 'room.dissolved') {
+    return { title: `${actor} approved room dissolution`, detail: 'Room successfully dissolved' }
+  }
+  if (action === 'room.recovered') {
+    return { title: `${actor} recovered the room`, detail: 'Admin rights reclaimed via recovery key' }
+  }
 
   return { title: `${actor} updated the room`, detail: action.replace('.', ' ') }
 }
@@ -1638,16 +1857,20 @@ function Room({
   room,
   members,
   currentUserId,
+  isAdmin,
   requests,
   onRequest,
+  onRemoveMember,
   onLeave,
   onToast,
 }: {
-  room: { id: string; name: string }
+  room: RoomContext
   members: RoomMember[]
   currentUserId: string
+  isAdmin: boolean
   requests: JoinRequest[]
   onRequest: (requestId: string, action: 'approve' | 'reject') => Promise<void>
+  onRemoveMember: (membershipId: string, memberName: string) => Promise<void>
   onLeave: () => void
   onToast: (message: string) => void
 }) {
@@ -1675,7 +1898,7 @@ function Room({
       </div>
 
       {/* PENDING REQUESTS */}
-      {requests.length > 0 && (
+      {isAdmin && requests.length > 0 && (
         <section className="card requests-card">
           <div className="card-header-row">
             <div>
@@ -1714,7 +1937,7 @@ function Room({
         <div className="roster-list">
           {activeMembers.map((member) => {
             const isMe = member.id === currentUserId
-            const isAdmin = member.role === 'admin'
+            const isMemberAdmin = member.role === 'admin'
             return (
               <div key={member.id} className="roster-item">
                 <div className="roster-user">
@@ -1725,8 +1948,25 @@ function Room({
                   </div>
                 </div>
 
-                <div>
-                  {isAdmin ? <span className="pill-badge dark">Admin</span> : <span className="pill-badge muted">Member</span>}
+                <div className="roster-actions-row">
+                  {isMemberAdmin ? (
+                    <span className="pill-badge dark">Admin</span>
+                  ) : (
+                    <span className="pill-badge muted">Member</span>
+                  )}
+                  {isAdmin && !isMe && (
+                    <button
+                      className="ghost-btn danger sm"
+                      onClick={() => {
+                        if (window.confirm(`Are you sure you want to remove ${member.name} from the room?`)) {
+                          void onRemoveMember(member.membershipId, member.name)
+                        }
+                      }}
+                      title={`Remove ${member.name} from room`}
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
               </div>
             )
@@ -1760,7 +2000,7 @@ function Room({
 
       <div className="leave-room-box">
         <button className="ghost-btn danger" onClick={onLeave}>
-          Leave Room
+          {isAdmin && activeMembers.length > 1 ? 'Leave / Dissolve Room' : 'Leave Room'}
         </button>
       </div>
     </div>
@@ -2000,7 +2240,7 @@ function ExpenseDetails({
 }
 
 // -------------------------------------------------------------------------
-// EDIT EXPENSE MODAL (Allows editing title, amount, payerId, and participantIds)
+// EDIT EXPENSE MODAL
 // -------------------------------------------------------------------------
 function EditExpense({
   expense,
@@ -2310,7 +2550,7 @@ function RoomSwitcher({
   currentRoomId: string | null
   rooms: ApiRoomMembership[]
   onSelectRoom: (code: string) => void
-  onCreateRoom: (name: string) => Promise<void>
+  onCreateRoom: (name: string, recoveryPassword?: string, recoveryQuestion?: string) => Promise<void>
   onJoinRoom: (code: string) => Promise<void>
   onLogout: () => void
   onClose: () => void
@@ -2326,6 +2566,7 @@ function RoomSwitcher({
     setIsCreating(true)
     try {
       await onCreateRoom(roomName.trim())
+      setRoomName('')
     } finally {
       setIsCreating(false)
     }
@@ -2337,6 +2578,7 @@ function RoomSwitcher({
     setIsJoining(true)
     try {
       await onJoinRoom(roomId.trim().toUpperCase())
+      setRoomId('')
     } finally {
       setIsJoining(false)
     }
@@ -2435,9 +2677,18 @@ function RoomSwitcher({
 // -------------------------------------------------------------------------
 // ONBOARDING CREATE & JOIN MODALS
 // -------------------------------------------------------------------------
-function CreateRoomModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (name: string) => Promise<void> }) {
+function CreateRoomModal({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void
+  onSubmit: (name: string, recoveryPassword?: string, recoveryQuestion?: string) => Promise<void>
+}) {
   const [name, setName] = useState('')
+  const [recoveryPassword, setRecoveryPassword] = useState('')
+  const [recoveryQuestion, setRecoveryQuestion] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
   return (
     <Modal title="Create a Room" onClose={onClose}>
       <form
@@ -2447,7 +2698,11 @@ function CreateRoomModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
           if (!name.trim() || submitting) return
           setSubmitting(true)
           try {
-            await onSubmit(name.trim())
+            await onSubmit(
+              name.trim(),
+              recoveryPassword.trim() || undefined,
+              recoveryQuestion.trim() || undefined
+            )
           } finally {
             setSubmitting(false)
           }
@@ -2465,6 +2720,35 @@ function CreateRoomModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
             maxLength={60}
           />
         </div>
+
+        <div className="input-group">
+          <label htmlFor="modal-recovery-pass">
+            Recovery Password / Key <span className="field-optional">(Optional)</span>
+          </label>
+          <input
+            id="modal-recovery-pass"
+            type="password"
+            value={recoveryPassword}
+            onChange={(e) => setRecoveryPassword(e.target.value)}
+            placeholder="Optional secret key to reclaim admin access"
+            maxLength={80}
+          />
+        </div>
+
+        <div className="input-group">
+          <label htmlFor="modal-recovery-q">
+            Security Question / Hint <span className="field-optional">(Optional)</span>
+          </label>
+          <input
+            id="modal-recovery-q"
+            type="text"
+            value={recoveryQuestion}
+            onChange={(e) => setRecoveryQuestion(e.target.value)}
+            placeholder="e.g. Secret nickname"
+            maxLength={120}
+          />
+        </div>
+
         <button className="btn-primary submit-btn" type="submit" disabled={submitting}>
           {submitting ? 'Creating...' : 'Create Room →'}
         </button>
@@ -2522,6 +2806,8 @@ function JoinRoomModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (
 // -------------------------------------------------------------------------
 function LeaveRoom({
   roomName,
+  isAdmin,
+  memberCount,
   outstandingPay,
   outstandingReceive,
   onClose,
@@ -2529,37 +2815,51 @@ function LeaveRoom({
 }: {
   roomId: string
   roomName: string
+  isAdmin: boolean
+  memberCount: number
   outstandingPay: number
   outstandingReceive: number
   onClose: () => void
   onConfirm: () => Promise<void>
 }) {
   const [leaving, setLeaving] = useState(false)
+  const isMultiMemberAdmin = isAdmin && memberCount > 1
 
   return (
-    <Modal title="Leave Room" onClose={onClose}>
+    <Modal title={isMultiMemberAdmin ? 'Dissolve / Leave Room' : 'Leave Room'} onClose={onClose}>
       <div className="leave-modal-body">
-        <div className="warning-card">
-          {outstandingPay > 0 ? (
+        {isMultiMemberAdmin ? (
+          <div className="warning-card notice">
             <p>
-              You still owe <strong>{money(outstandingPay)}</strong> in this room.
-              <br />
-              Leaving preserves financial logs.
+              <strong>Admin Consensus Required:</strong> Because there are other active members in this flat, leaving or dissolving the room requires approval from the other roommates.
             </p>
-          ) : outstandingReceive > 0 ? (
-            <p>
-              Roommates owe you <strong>{money(outstandingReceive)}</strong>.
-              <br />
-              Leaving preserves your transaction records.
+            <p style={{ marginTop: 6 }}>
+              Clicking below will initiate a dissolution request for other members to vote on.
             </p>
-          ) : (
-            <p>
-              Your balance in this room is settled (₹0).
-              <br />
-              Leaving will archive your membership.
-            </p>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="warning-card">
+            {outstandingPay > 0 ? (
+              <p>
+                You still owe <strong>{money(outstandingPay)}</strong> in this room.
+                <br />
+                Leaving preserves financial logs.
+              </p>
+            ) : outstandingReceive > 0 ? (
+              <p>
+                Roommates owe you <strong>{money(outstandingReceive)}</strong>.
+                <br />
+                Leaving preserves your transaction records.
+              </p>
+            ) : (
+              <p>
+                Your balance in this room is settled (₹0).
+                <br />
+                Leaving will archive your membership.
+              </p>
+            )}
+          </div>
+        )}
 
         <button
           className="btn-primary danger submit-btn"
@@ -2569,7 +2869,11 @@ function LeaveRoom({
             await onConfirm()
           }}
         >
-          {leaving ? 'Leaving room...' : `Leave ${roomName}`}
+          {leaving
+            ? 'Processing...'
+            : isMultiMemberAdmin
+            ? 'Request Room Dissolution →'
+            : `Leave ${roomName}`}
         </button>
         <button className="btn-secondary" onClick={onClose} style={{ width: '100%', marginTop: 8 }}>
           Stay in Room
@@ -2612,3 +2916,4 @@ function Modal({
 }
 
 export default App
+

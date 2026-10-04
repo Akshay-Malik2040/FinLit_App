@@ -34,7 +34,7 @@ app.use(cors({
 app.use(express.json({ limit: '100kb' }))
 app.use(cookieParser())
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }))
-app.get('/', (_req, res) => res.json({ success: true, data: { service: 'Flatmate Finance API', frontend: env.CLIENT_URL } }))
+app.get('/', (_req, res) => res.json({ success: true, data: { service: 'FinLit API', frontend: env.CLIENT_URL } }))
 app.get('/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }))
 app.use('/api/auth', authRoutes)
 app.use('/api/rooms', roomRoutes)

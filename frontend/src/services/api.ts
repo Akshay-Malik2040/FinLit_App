@@ -25,6 +25,13 @@ export type ApiRoom = {
   _id: string
   publicId: string
   name: string
+  recoveryQuestion?: string
+  dissolveRequest?: {
+    requestedBy: string
+    requestedAt: string
+    status: 'pending' | 'approved' | 'rejected'
+    approvals: Array<{ userId: string; approved: boolean; decidedAt?: string }>
+  }
 }
 
 export type ApiRoomMembership = {
@@ -109,10 +116,30 @@ export function listRooms() {
   return request<{ rooms: ApiRoomMembership[] }>('/api/rooms')
 }
 
-export function createRoom(name: string, recoveryPassword?: string) {
+export function createRoom(name: string, recoveryPassword?: string, recoveryQuestion?: string) {
   return request<{ room: ApiRoom }>('/api/rooms', {
     method: 'POST',
-    body: JSON.stringify({ name, recoveryPassword }),
+    body: JSON.stringify({ name, recoveryPassword, recoveryQuestion }),
+  })
+}
+
+export function recoverRoom(roomId: string, recoveryPassword: string) {
+  return request<{ room: ApiRoom; membership: ApiRoomMembership }>('/api/rooms/recover', {
+    method: 'POST',
+    body: JSON.stringify({ roomId, recoveryPassword }),
+  })
+}
+
+export function removeMember(roomId: string, membershipId: string) {
+  return request<{ membership: unknown }>(`/api/rooms/${roomId}/members/${membershipId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function decideDissolveRequest(roomId: string, action: 'approve' | 'reject') {
+  return request<{ room: ApiRoom; status: string; dissolved?: boolean }>(`/api/rooms/${roomId}/dissolve/decide`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
   })
 }
 
@@ -143,7 +170,7 @@ export function recordPayment(roomId: string, toUserId: string, amountPaise: num
 }
 
 export function leaveRoom(roomId: string) {
-  return request<{ membership: unknown }>(`/api/rooms/${roomId}/leave`, {
+  return request<{ membership: unknown; requiresApproval?: boolean; dissolved?: boolean }>(`/api/rooms/${roomId}/leave`, {
     method: 'POST',
   })
 }

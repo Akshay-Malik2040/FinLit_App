@@ -1,4 +1,4 @@
-# Flatmate Finance API
+# FinLit API
 
 Set `MONGODB_URI`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `CLIENT_URL`, `PORT`, and `NODE_ENV` from `.env.example`. Start the API with `npm run backend:dev`.
 

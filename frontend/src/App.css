@@ -1,5 +1,5 @@
 /* =========================================================================
-   FLATMATE FINANCE — MODERN MINIMALIST E-INK THEME
+   FINLIT — MODERN MINIMALIST E-INK THEME
    Simple, clean, breathable, contemporary monochrome design
    ========================================================================= */
 
@@ -240,28 +240,37 @@ h3 {
 
 .segmented-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   padding: 4px;
   background-color: var(--bg-subtle);
   border-radius: var(--radius-md);
   margin-bottom: 22px;
+  gap: 2px;
 }
 
 .tab-pill {
-  padding: 10px 14px;
+  padding: 10px 8px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--ink-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
   text-align: center;
+  white-space: nowrap;
 }
 
 .tab-pill.active {
   background-color: var(--bg-card);
   color: var(--ink-primary);
   box-shadow: var(--shadow-sm);
+}
+
+.field-optional {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-muted);
+  margin-left: 4px;
 }
 
 .modern-form {
@@ -1145,6 +1154,17 @@ h3 {
 
 .roster-item.muted {
   opacity: 0.6;
+}
+
+.dissolve-banner {
+  background-color: var(--bg-hover);
+  border-color: var(--ink-primary);
+}
+
+.roster-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .leave-room-box {

@@ -1,6 +1,6 @@
-# Flatmate Finance
+# FinLit
 
-Flatmate Finance is split into a Vite React frontend in `frontend/` and an Express + TypeScript backend in `backend/`.
+FinLit is split into a Vite React frontend in `frontend/` and an Express + TypeScript backend in `backend/`.
 
 ## Local setup
 
