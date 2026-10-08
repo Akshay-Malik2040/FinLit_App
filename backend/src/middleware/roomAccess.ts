@@ -4,10 +4,10 @@ import { Membership } from '../models/Membership.js'
 import { Room } from '../models/Room.js'
 import { HttpError } from '../utils/http.js'
 
-export function buildRoomQuery(identifier: string) {
+export function buildRoomQuery(identifier: string): any {
   const trimmed = identifier.trim()
   const upper = trimmed.toUpperCase()
-  const orConditions: Array<Record<string, unknown>> = [
+  const orConditions: any[] = [
     { publicId: upper },
     { publicId: trimmed },
     { joinCode: upper },
@@ -27,8 +27,11 @@ export function buildRoomQuery(identifier: string) {
 export async function findRoomByIdentifier(identifier: string) {
   const query = buildRoomQuery(identifier)
   const room = await Room.findOne(query)
-  if (room && !room.publicId) {
-    room.publicId = (room as any).joinCode || (room as any).code || room._id.toString()
+  if (room) {
+    const r = room as any
+    if (!r.publicId) {
+      r.publicId = r.joinCode || r.code || r._id?.toString()
+    }
   }
   return room
 }

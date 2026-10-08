@@ -37,6 +37,7 @@ import {
 } from './services/api'
 import {
   getCached,
+  getRoomScopedCache,
   getStoredActiveRoomId,
   setStoredActiveRoomId,
   type CachedBalances,
@@ -157,11 +158,11 @@ function App() {
   const cachedRooms = getCached<ApiRoomMembership[]>('finlit_cache_rooms') || []
   const initialActiveRoom = getStoredActiveRoomId() || cachedRooms.find((r) => r.status === 'active')?.roomId?.publicId || null
 
-  const cachedRoomDetail = initialActiveRoom ? getCached<CachedRoomDetail>(`finlit_cache_room_${initialActiveRoom}`) : null
-  const cachedExpensesData = initialActiveRoom ? getCached<{ expenses: ApiExpense[]; total: number }>(`finlit_cache_expenses_${initialActiveRoom}`) : null
-  const cachedBalancesData = initialActiveRoom ? getCached<CachedBalances>(`finlit_cache_balances_${initialActiveRoom}`) : null
-  const cachedSummaryData = initialActiveRoom ? getCached<ApiSummary>(`finlit_cache_summary_${initialActiveRoom}`) : null
-  const cachedActivityData = initialActiveRoom ? getCached<{ events: ApiActivity[] }>(`finlit_cache_activity_${initialActiveRoom}`) : null
+  const cachedRoomDetail = initialActiveRoom ? getRoomScopedCache<CachedRoomDetail>('finlit_cache_room', initialActiveRoom) : null
+  const cachedExpensesData = initialActiveRoom ? getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', initialActiveRoom) : null
+  const cachedBalancesData = initialActiveRoom ? getRoomScopedCache<CachedBalances>('finlit_cache_balances', initialActiveRoom) : null
+  const cachedSummaryData = initialActiveRoom ? getRoomScopedCache<ApiSummary>('finlit_cache_summary', initialActiveRoom) : null
+  const cachedActivityData = initialActiveRoom ? getRoomScopedCache<{ events: ApiActivity[] }>('finlit_cache_activity', initialActiveRoom) : null
 
   const initialMembers: RoomMember[] = cachedRoomDetail
     ? cachedRoomDetail.members.map((m) => ({
@@ -291,81 +292,92 @@ function App() {
     if (!activeRoomId || !currentUser) return
     try {
       const [roomData, expenseData, balanceData, summaryData, activityData] = await Promise.all([
-        getRoom(activeRoomId),
-        listExpenses(activeRoomId),
-        getBalances(activeRoomId),
-        getSummary(activeRoomId),
-        getActivity(activeRoomId),
+        getRoom(activeRoomId).catch(() => getRoomScopedCache<CachedRoomDetail>('finlit_cache_room', activeRoomId)),
+        listExpenses(activeRoomId).catch(() => getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', activeRoomId)),
+        getBalances(activeRoomId).catch(() => getRoomScopedCache<CachedBalances>('finlit_cache_balances', activeRoomId)),
+        getSummary(activeRoomId).catch(() => getRoomScopedCache<ApiSummary>('finlit_cache_summary', activeRoomId)),
+        getActivity(activeRoomId).catch(() => getRoomScopedCache<{ events: ApiActivity[] }>('finlit_cache_activity', activeRoomId)),
       ])
 
-      setRoomContext({
-        id: roomData.room.publicId,
-        name: roomData.room.name,
-        recoveryQuestion: roomData.room.recoveryQuestion,
-        dissolveRequest: roomData.room.dissolveRequest,
-      })
+      if (roomData) {
+        setRoomContext({
+          id: roomData.room.publicId,
+          name: roomData.room.name,
+          recoveryQuestion: roomData.room.recoveryQuestion,
+          dissolveRequest: roomData.room.dissolveRequest,
+        })
 
-      const loadedMembers: RoomMember[] = roomData.members.map((m) => ({
-        id: m.userId._id,
-        membershipId: m._id,
-        name: m.userId.displayName,
-        role: m.role,
-        status: m.status,
-      }))
-      setRoomMembers(loadedMembers)
+        const loadedMembers: RoomMember[] = roomData.members.map((m) => ({
+          id: m.userId._id,
+          membershipId: m._id,
+          name: m.userId.displayName,
+          role: m.role,
+          status: m.status,
+        }))
+        setRoomMembers(loadedMembers)
 
-      const memberNameMap = new Map(loadedMembers.map((m) => [m.id, m.name]))
-      const outSuggestions = balanceData.suggestions.filter((s) => s.fromUserId === currentUser.id)
-      const inSuggestions = balanceData.suggestions.filter((s) => s.toUserId === currentUser.id)
-
-      const mappedNeedToPay: PaymentRow[] = outSuggestions.map((s) => ({
-        id: s.toUserId,
-        name: memberNameMap.get(s.toUserId) ?? 'Roommate',
-        amount: s.amountPaise / 100,
-      }))
-
-      const mappedNeedToReceive: PaymentRow[] = inSuggestions.map((s) => ({
-        id: s.fromUserId,
-        name: memberNameMap.get(s.fromUserId) ?? 'Roommate',
-        amount: s.amountPaise / 100,
-      }))
-
-      setNeedToPay(mappedNeedToPay)
-      setNeedToReceive(mappedNeedToReceive)
-
-      if (mappedNeedToPay.length > 0) {
-        setPaymentTarget(mappedNeedToPay[0])
+        const currentMember = loadedMembers.find((m) => m.id === currentUser.id)
+        if (currentMember?.role === 'admin') {
+          const reqs = await listJoinRequests(activeRoomId).catch(() => ({ requests: [] }))
+          setJoinRequests(reqs.requests.map((r) => ({ id: r._id, name: r.userId.displayName })))
+        }
       }
 
-      const allPendingPayments = balanceData.pendingPayments || []
-      setIncomingPayments(
-        allPendingPayments.filter((p) => {
-          const toId = typeof p.toUserId === 'object' && p.toUserId !== null ? p.toUserId._id : String(p.toUserId)
-          return toId === currentUser.id
-        })
-      )
-      setOutgoingPayments(
-        allPendingPayments.filter((p) => {
-          const fromId = typeof p.fromUserId === 'object' && p.fromUserId !== null ? p.fromUserId._id : String(p.fromUserId)
-          return fromId === currentUser.id
-        })
-      )
+      if (balanceData) {
+        const membersList = roomMembers.length > 0 ? roomMembers : (roomData?.members.map(m => ({ id: m.userId._id, name: m.userId.displayName })) || [])
+        const memberNameMap = new Map(membersList.map((m) => [m.id, m.name]))
+        const outSuggestions = balanceData.suggestions.filter((s) => s.fromUserId === currentUser.id)
+        const inSuggestions = balanceData.suggestions.filter((s) => s.toUserId === currentUser.id)
 
-      setExpenses(expenseData.expenses.filter((e) => !e.voidedAt).map(toUiExpense))
-      setSummary(summaryData)
-      setActivity(activityData.events)
+        const mappedNeedToPay: PaymentRow[] = outSuggestions.map((s) => ({
+          id: s.toUserId,
+          name: memberNameMap.get(s.toUserId) ?? 'Roommate',
+          amount: s.amountPaise / 100,
+        }))
 
-      const currentMember = loadedMembers.find((m) => m.id === currentUser.id)
-      if (currentMember?.role === 'admin') {
-        const reqs = await listJoinRequests(activeRoomId).catch(() => ({ requests: [] }))
-        setJoinRequests(reqs.requests.map((r) => ({ id: r._id, name: r.userId.displayName })))
+        const mappedNeedToReceive: PaymentRow[] = inSuggestions.map((s) => ({
+          id: s.fromUserId,
+          name: memberNameMap.get(s.fromUserId) ?? 'Roommate',
+          amount: s.amountPaise / 100,
+        }))
+
+        setNeedToPay(mappedNeedToPay)
+        setNeedToReceive(mappedNeedToReceive)
+
+        if (mappedNeedToPay.length > 0) {
+          setPaymentTarget(mappedNeedToPay[0])
+        }
+
+        const allPendingPayments = balanceData.pendingPayments || []
+        setIncomingPayments(
+          allPendingPayments.filter((p) => {
+            const toId = typeof p.toUserId === 'object' && p.toUserId !== null ? p.toUserId._id : String(p.toUserId)
+            return toId === currentUser.id
+          })
+        )
+        setOutgoingPayments(
+          allPendingPayments.filter((p) => {
+            const fromId = typeof p.fromUserId === 'object' && p.fromUserId !== null ? p.fromUserId._id : String(p.fromUserId)
+            return fromId === currentUser.id
+          })
+        )
+      }
+
+      if (expenseData) {
+        setExpenses(expenseData.expenses.filter((e) => !e.voidedAt).map(toUiExpense))
+      }
+
+      if (summaryData) {
+        setSummary(summaryData)
+      }
+
+      if (activityData) {
+        setActivity(activityData.events)
       }
     } catch {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
-        showToast('Could not refresh room data.')
-      }
+      // Graceful offline fallback
     }
-  }, [activeRoomId, currentUser])
+  }, [activeRoomId, currentUser, roomMembers])
 
   // 1. Initial auth check & room bootstrap (Atomic & Offline-resilient)
   useEffect(() => {
@@ -612,7 +624,10 @@ function App() {
   const handleAddExpense = async (draft: ExpenseDraft) => {
     if (!roomContext) return
     try {
-      await createExpense(roomContext.id, draft)
+      const res = await createExpense(roomContext.id, draft)
+      if (res?.expense) {
+        setExpenses((prev) => [toUiExpense(res.expense), ...prev.filter((e) => e.apiId !== res.expense._id)])
+      }
       setOverlay(null)
       showToast(`${draft.description || 'Expense'} added`)
       await refreshRoomData()

@@ -3,8 +3,10 @@ import {
   createOptimisticPayment,
   enqueueOfflineAction,
   getCached,
+  getRoomScopedCache,
   isOfflineOrNetworkError,
   processOfflineSync,
+  saveRoomScopedCache,
   setCached,
   type CachedBalances,
   type CachedRoomDetail,
@@ -119,9 +121,11 @@ export function setStoredToken(token: string | null): void {
 
 export class ApiError extends Error {
   code: string
-  constructor(code: string, message: string) {
+  status?: number
+  constructor(code: string, message: string, status?: number) {
     super(message)
     this.code = code
+    this.status = status
   }
 }
 
@@ -163,14 +167,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new ApiError(
       'INVALID_RESPONSE',
-      `Server returned an invalid response (${response.status} ${response.statusText}). Check that VITE_API_URL points to your backend.`
+      `Server returned an invalid response (${response.status} ${response.statusText}). Check that VITE_API_URL points to your backend.`,
+      response.status
     )
   }
 
   if (!response.ok || !body.success) {
     throw new ApiError(
       body.success ? 'REQUEST_FAILED' : body.error.code,
-      body.success ? 'Request failed' : body.error.message
+      body.success ? 'Request failed' : body.error.message,
+      response.status
     )
   }
   return body.data
@@ -261,14 +267,15 @@ export async function decideDissolveRequest(roomId: string, action: 'approve' | 
 }
 
 export async function getRoom(roomId: string) {
-  const cacheKey = `finlit_cache_room_${roomId}`
   try {
     const data = await request<CachedRoomDetail>(`/api/rooms/${roomId}`)
-    setCached(cacheKey, data)
+    saveRoomScopedCache('finlit_cache_room', roomId, data)
+    if (data?.room?._id) saveRoomScopedCache('finlit_cache_room', data.room._id, data)
+    if (data?.room?.publicId) saveRoomScopedCache('finlit_cache_room', data.room.publicId, data)
     return data
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      const cached = getCached<CachedRoomDetail>(cacheKey)
+      const cached = getRoomScopedCache<CachedRoomDetail>('finlit_cache_room', roomId)
       if (cached) return cached
     }
     throw err
@@ -277,14 +284,13 @@ export async function getRoom(roomId: string) {
 
 // Expenses
 export async function listExpenses(roomId: string) {
-  const cacheKey = `finlit_cache_expenses_${roomId}`
   try {
     const data = await request<{ expenses: ApiExpense[]; total: number }>(`/api/rooms/${roomId}/expenses`)
-    setCached(cacheKey, data)
+    saveRoomScopedCache('finlit_cache_expenses', roomId, data)
     return data
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      const cached = getCached<{ expenses: ApiExpense[]; total: number }>(cacheKey)
+      const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', roomId)
       if (cached) return cached
     }
     throw err
@@ -292,7 +298,7 @@ export async function listExpenses(roomId: string) {
 }
 
 export async function createExpense(roomId: string, draft: ExpenseDraft): Promise<{ expense: ApiExpense }> {
-  // If offline, store optimistically immediately
+  // If explicitly offline
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     const optimistic = createOptimisticExpense(roomId, draft)
     enqueueOfflineAction({
@@ -312,10 +318,9 @@ export async function createExpense(roomId: string, draft: ExpenseDraft): Promis
       body: JSON.stringify({ ...draft, splitMethod: 'equal' }),
     })
     // Update local cache
-    const cacheKey = `finlit_cache_expenses_${roomId}`
-    const cached = getCached<{ expenses: ApiExpense[]; total: number }>(cacheKey)
+    const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', roomId)
     if (cached) {
-      setCached(cacheKey, {
+      saveRoomScopedCache('finlit_cache_expenses', roomId, {
         expenses: [data.expense, ...cached.expenses.filter((e) => e._id !== data.expense._id)],
         total: cached.total + 1,
       })
@@ -389,14 +394,13 @@ export function leaveRoom(roomId: string) {
 
 // Balances & Activities & Summaries
 export async function getBalances(roomId: string) {
-  const cacheKey = `finlit_cache_balances_${roomId}`
   try {
     const data = await request<CachedBalances>(`/api/rooms/${roomId}/balances`)
-    setCached(cacheKey, data)
+    saveRoomScopedCache('finlit_cache_balances', roomId, data)
     return data
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      const cached = getCached<CachedBalances>(cacheKey)
+      const cached = getRoomScopedCache<CachedBalances>('finlit_cache_balances', roomId)
       if (cached) return cached
     }
     throw err
@@ -404,14 +408,13 @@ export async function getBalances(roomId: string) {
 }
 
 export async function getActivity(roomId: string) {
-  const cacheKey = `finlit_cache_activity_${roomId}`
   try {
     const data = await request<{ events: ApiActivity[] }>(`/api/rooms/${roomId}/activity`)
-    setCached(cacheKey, data)
+    saveRoomScopedCache('finlit_cache_activity', roomId, data)
     return data
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      const cached = getCached<{ events: ApiActivity[] }>(cacheKey)
+      const cached = getRoomScopedCache<{ events: ApiActivity[] }>('finlit_cache_activity', roomId)
       if (cached) return cached
     }
     throw err
@@ -419,14 +422,13 @@ export async function getActivity(roomId: string) {
 }
 
 export async function getSummary(roomId: string) {
-  const cacheKey = `finlit_cache_summary_${roomId}`
   try {
     const data = await request<ApiSummary>(`/api/rooms/${roomId}/summary`)
-    setCached(cacheKey, data)
+    saveRoomScopedCache('finlit_cache_summary', roomId, data)
     return data
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      const cached = getCached<ApiSummary>(cacheKey)
+      const cached = getRoomScopedCache<ApiSummary>('finlit_cache_summary', roomId)
       if (cached) return cached
     }
     throw err
