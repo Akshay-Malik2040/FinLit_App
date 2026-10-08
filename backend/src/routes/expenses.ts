@@ -38,6 +38,7 @@ router.post('/rooms/:roomId/expenses', getRoomForMember, asyncHandler(async (req
   if (method === 'percentage') allocations = splitPercentage(input.data.amountPaise, allocations)
   validateAllocations(input.data.amountPaise, allocations, method)
   const expense = await Expense.create({ roomId: room._id, description: input.data.description || 'Shared expense', amountPaise: input.data.amountPaise, payerId: input.data.payerId, participants: input.data.participantIds, allocations, splitMethod: method, expenseDate: input.data.expenseDate, createdBy: req.userId })
+  await expense.populate('payerId createdBy', 'displayName')
   await AuditEvent.create({ roomId: room._id, entityType: 'expense', entityId: expense._id, action: 'expense.created', actorId: req.userId, newValues: expense.toObject() })
   ok(res, { expense }, 201)
 }))

@@ -3,6 +3,7 @@ import {
   createOptimisticPayment,
   enqueueOfflineAction,
   getCached,
+  getOfflineQueue,
   getRoomScopedCache,
   isOfflineOrNetworkError,
   processOfflineSync,
@@ -286,8 +287,34 @@ export async function getRoom(roomId: string) {
 export async function listExpenses(roomId: string) {
   try {
     const data = await request<{ expenses: ApiExpense[]; total: number }>(`/api/rooms/${roomId}/expenses`)
-    saveRoomScopedCache('finlit_cache_expenses', roomId, data)
-    return data
+
+    // Reconcile with pending offline queue to avoid duplicate entries once synced
+    const queue = getOfflineQueue()
+    const pendingExpenses = queue.filter(
+      (a): a is OfflineAction & { type: 'create_expense' } =>
+        a.type === 'create_expense' && (a.roomId === roomId || roomId.includes(a.roomId))
+    )
+    const pendingTempIds = new Set(pendingExpenses.map((a) => a.tempId))
+
+    // Only retain offline temporary expenses that are STILL pending in the sync queue
+    const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', roomId)
+    const unsyncedOffline = (cached?.expenses || []).filter(
+      (e) => e._id.startsWith('offline_exp_') && pendingTempIds.has(e._id)
+    )
+
+    const serverIds = new Set(data.expenses.map((e) => e._id))
+    const mergedExpenses = [
+      ...unsyncedOffline.filter((e) => !serverIds.has(e._id)),
+      ...data.expenses,
+    ]
+
+    const finalData = {
+      expenses: mergedExpenses,
+      total: mergedExpenses.length,
+    }
+
+    saveRoomScopedCache('finlit_cache_expenses', roomId, finalData)
+    return finalData
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
       const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', roomId)
@@ -317,12 +344,13 @@ export async function createExpense(roomId: string, draft: ExpenseDraft): Promis
       method: 'POST',
       body: JSON.stringify({ ...draft, splitMethod: 'equal' }),
     })
-    // Update local cache
+    // Update local cache without duplicates
     const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', roomId)
     if (cached) {
+      const filtered = cached.expenses.filter((e) => e._id !== data.expense._id)
       saveRoomScopedCache('finlit_cache_expenses', roomId, {
-        expenses: [data.expense, ...cached.expenses.filter((e) => e._id !== data.expense._id)],
-        total: cached.total + 1,
+        expenses: [data.expense, ...filtered],
+        total: filtered.length + 1,
       })
     }
     return data
@@ -396,8 +424,32 @@ export function leaveRoom(roomId: string) {
 export async function getBalances(roomId: string) {
   try {
     const data = await request<CachedBalances>(`/api/rooms/${roomId}/balances`)
-    saveRoomScopedCache('finlit_cache_balances', roomId, data)
-    return data
+
+    const queue = getOfflineQueue()
+    const pendingPaymentActions = queue.filter(
+      (a): a is OfflineAction & { type: 'record_payment' } =>
+        a.type === 'record_payment' && (a.roomId === roomId || roomId.includes(a.roomId))
+    )
+    const pendingTempIds = new Set(pendingPaymentActions.map((a) => a.tempId))
+
+    const cached = getRoomScopedCache<CachedBalances>('finlit_cache_balances', roomId)
+    const unsyncedOfflinePayments = (cached?.pendingPayments || []).filter(
+      (p) => p._id.startsWith('offline_pay_') && pendingTempIds.has(p._id)
+    )
+
+    const serverPaymentIds = new Set((data.pendingPayments || []).map((p) => p._id))
+    const mergedPending = [
+      ...unsyncedOfflinePayments.filter((p) => !serverPaymentIds.has(p._id)),
+      ...(data.pendingPayments || []),
+    ]
+
+    const finalBalances = {
+      ...data,
+      pendingPayments: mergedPending,
+    }
+
+    saveRoomScopedCache('finlit_cache_balances', roomId, finalBalances)
+    return finalBalances
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
       const cached = getRoomScopedCache<CachedBalances>('finlit_cache_balances', roomId)
@@ -607,10 +659,19 @@ export const apiIsConfigured = true
 async function executeOfflineAction(action: OfflineAction): Promise<boolean> {
   switch (action.type) {
     case 'create_expense': {
-      await request<{ expense: ApiExpense }>(`/api/rooms/${action.roomId}/expenses`, {
+      const res = await request<{ expense: ApiExpense }>(`/api/rooms/${action.roomId}/expenses`, {
         method: 'POST',
         body: JSON.stringify({ ...action.draft, splitMethod: 'equal' }),
       })
+      // Clean up temporary offline expense from cache and replace with synced server expense
+      const cached = getRoomScopedCache<{ expenses: ApiExpense[]; total: number }>('finlit_cache_expenses', action.roomId)
+      if (cached) {
+        const withoutTemp = cached.expenses.filter((e) => e._id !== action.tempId && e._id !== res.expense._id)
+        saveRoomScopedCache('finlit_cache_expenses', action.roomId, {
+          expenses: [res.expense, ...withoutTemp],
+          total: withoutTemp.length + 1,
+        })
+      }
       return true
     }
     case 'record_payment': {
@@ -618,6 +679,11 @@ async function executeOfflineAction(action: OfflineAction): Promise<boolean> {
         method: 'POST',
         body: JSON.stringify({ toUserId: action.toUserId, amountPaise: action.amountPaise }),
       })
+      const cached = getRoomScopedCache<CachedBalances>('finlit_cache_balances', action.roomId)
+      if (cached && cached.pendingPayments) {
+        cached.pendingPayments = cached.pendingPayments.filter((p) => p._id !== action.tempId)
+        saveRoomScopedCache('finlit_cache_balances', action.roomId, cached)
+      }
       return true
     }
     case 'update_expense': {

@@ -364,7 +364,16 @@ function App() {
       }
 
       if (expenseData) {
-        setExpenses(expenseData.expenses.filter((e) => !e.voidedAt).map(toUiExpense))
+        const uniqueMap = new Map<string, Expense>()
+        for (const exp of expenseData.expenses) {
+          if (!exp.voidedAt) {
+            const uiExp = toUiExpense(exp)
+            if (!uniqueMap.has(uiExp.apiId)) {
+              uniqueMap.set(uiExp.apiId, uiExp)
+            }
+          }
+        }
+        setExpenses(Array.from(uniqueMap.values()))
       }
 
       if (summaryData) {
