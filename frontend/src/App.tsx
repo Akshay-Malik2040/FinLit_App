@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useTransition } from 'react'
+import React, { useCallback, useEffect, useState, useTransition } from 'react'
 import './App.css'
 import {
   apiIsConfigured,
@@ -13,6 +13,7 @@ import {
   getCurrentUser,
   getExpenseHistory,
   getRoom,
+  getStoredToken,
   getSummary,
   joinRoom,
   leaveRoom,
@@ -23,8 +24,10 @@ import {
   recordPayment,
   recoverRoom,
   removeMember,
+  setStoredToken,
   updateExpense,
   voidExpense,
+  ApiError,
   type ApiActivity,
   type ApiExpense,
   type ApiPendingPayment,
@@ -32,6 +35,13 @@ import {
   type ApiSummary,
   type ExpenseDraft,
 } from './services/api'
+import {
+  getCached,
+  getStoredActiveRoomId,
+  setStoredActiveRoomId,
+  type CachedBalances,
+  type CachedRoomDetail,
+} from './services/offlineSync'
 
 type View = 'home' | 'activity' | 'room'
 type Overlay = 'add' | 'expense' | 'edit' | 'history' | 'pay' | 'rooms' | 'leave' | null
@@ -142,10 +152,65 @@ const toUiExpense = (expense: ApiExpense): Expense => {
 }
 
 function App() {
+  // Pre-load from client cache for instant zero-flicker UI rendering
+  const cachedUser = getCached<CurrentUser>('finlit_cache_user')
+  const cachedRooms = getCached<ApiRoomMembership[]>('finlit_cache_rooms') || []
+  const initialActiveRoom = getStoredActiveRoomId() || cachedRooms.find((r) => r.status === 'active')?.roomId?.publicId || null
+
+  const cachedRoomDetail = initialActiveRoom ? getCached<CachedRoomDetail>(`finlit_cache_room_${initialActiveRoom}`) : null
+  const cachedExpensesData = initialActiveRoom ? getCached<{ expenses: ApiExpense[]; total: number }>(`finlit_cache_expenses_${initialActiveRoom}`) : null
+  const cachedBalancesData = initialActiveRoom ? getCached<CachedBalances>(`finlit_cache_balances_${initialActiveRoom}`) : null
+  const cachedSummaryData = initialActiveRoom ? getCached<ApiSummary>(`finlit_cache_summary_${initialActiveRoom}`) : null
+  const cachedActivityData = initialActiveRoom ? getCached<{ events: ApiActivity[] }>(`finlit_cache_activity_${initialActiveRoom}`) : null
+
+  const initialMembers: RoomMember[] = cachedRoomDetail
+    ? cachedRoomDetail.members.map((m) => ({
+        id: m.userId._id,
+        membershipId: m._id,
+        name: m.userId.displayName,
+        role: m.role,
+        status: m.status,
+      }))
+    : []
+
+  const initialMemberNameMap = new Map(initialMembers.map((m) => [m.id, m.name]))
+  const initialOutSuggestions =
+    cachedBalancesData && cachedUser ? cachedBalancesData.suggestions.filter((s) => s.fromUserId === cachedUser.id) : []
+  const initialInSuggestions =
+    cachedBalancesData && cachedUser ? cachedBalancesData.suggestions.filter((s) => s.toUserId === cachedUser.id) : []
+
+  const initialNeedToPay: PaymentRow[] = initialOutSuggestions.map((s) => ({
+    id: s.toUserId,
+    name: initialMemberNameMap.get(s.toUserId) ?? 'Roommate',
+    amount: s.amountPaise / 100,
+  }))
+
+  const initialNeedToReceive: PaymentRow[] = initialInSuggestions.map((s) => ({
+    id: s.fromUserId,
+    name: initialMemberNameMap.get(s.fromUserId) ?? 'Roommate',
+    amount: s.amountPaise / 100,
+  }))
+
+  const initialPendingPayments = cachedBalancesData?.pendingPayments || []
+  const initialIncoming = cachedUser
+    ? initialPendingPayments.filter((p) => {
+        const toId = typeof p.toUserId === 'object' && p.toUserId !== null ? p.toUserId._id : String(p.toUserId)
+        return toId === cachedUser.id
+      })
+    : []
+  const initialOutgoing = cachedUser
+    ? initialPendingPayments.filter((p) => {
+        const fromId = typeof p.fromUserId === 'object' && p.fromUserId !== null ? p.fromUserId._id : String(p.fromUserId)
+        return fromId === cachedUser.id
+      })
+    : []
+
   const [view, setView] = useState<View>('home')
   const [overlay, setOverlay] = useState<Overlay>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [authStatus, setAuthStatus] = useState<'checking' | 'loggedOut' | 'ready'>('checking')
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(cachedUser)
+  const [authStatus, setAuthStatus] = useState<'checking' | 'loggedOut' | 'ready'>(
+    cachedUser && (getStoredToken() || document.cookie.includes('session')) ? 'ready' : 'checking'
+  )
   const [loginError, setLoginError] = useState('')
   const [toast, setToast] = useState('')
   const [isLoadingRoom, setIsLoadingRoom] = useState(false)
@@ -153,30 +218,50 @@ function App() {
   const [, startTransition] = useTransition()
 
   // Room state
-  const [userRooms, setUserRooms] = useState<ApiRoomMembership[]>([])
-  const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
-  const [roomContext, setRoomContext] = useState<RoomContext | null>(null)
-  const [roomMembers, setRoomMembers] = useState<RoomMember[]>([])
-  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [userRooms, setUserRooms] = useState<ApiRoomMembership[]>(cachedRooms)
+  const [activeRoomId, setActiveRoomIdState] = useState<string | null>(initialActiveRoom)
+  const [roomContext, setRoomContext] = useState<RoomContext | null>(
+    cachedRoomDetail
+      ? {
+          id: cachedRoomDetail.room.publicId,
+          name: cachedRoomDetail.room.name,
+          recoveryQuestion: cachedRoomDetail.room.recoveryQuestion,
+          dissolveRequest: cachedRoomDetail.room.dissolveRequest,
+        }
+      : null
+  )
+  const [roomMembers, setRoomMembers] = useState<RoomMember[]>(initialMembers)
+  const [expenses, setExpenses] = useState<Expense[]>(
+    cachedExpensesData ? cachedExpensesData.expenses.filter((e) => !e.voidedAt).map(toUiExpense) : []
+  )
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
   const [expenseHistory, setExpenseHistory] = useState<ApiActivity[]>([])
-  const [needToPay, setNeedToPay] = useState<PaymentRow[]>([])
-  const [needToReceive, setNeedToReceive] = useState<PaymentRow[]>([])
-  const [paymentTarget, setPaymentTarget] = useState<PaymentRow | null>(null)
-  const [activity, setActivity] = useState<ApiActivity[]>([])
-  const [summary, setSummary] = useState<ApiSummary>({
-    month: '',
-    roomSpentPaise: 0,
-    youPaidPaise: 0,
-    yourSharePaise: 0,
-    paidForOthersPaise: 0,
-  })
+  const [needToPay, setNeedToPay] = useState<PaymentRow[]>(initialNeedToPay)
+  const [needToReceive, setNeedToReceive] = useState<PaymentRow[]>(initialNeedToReceive)
+  const [paymentTarget, setPaymentTarget] = useState<PaymentRow | null>(
+    initialNeedToPay.length > 0 ? initialNeedToPay[0] : null
+  )
+  const [activity, setActivity] = useState<ApiActivity[]>(cachedActivityData ? cachedActivityData.events : [])
+  const [summary, setSummary] = useState<ApiSummary>(
+    cachedSummaryData || {
+      month: '',
+      roomSpentPaise: 0,
+      youPaidPaise: 0,
+      yourSharePaise: 0,
+      paidForOthersPaise: 0,
+    }
+  )
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([])
-  const [incomingPayments, setIncomingPayments] = useState<ApiPendingPayment[]>([])
-  const [outgoingPayments, setOutgoingPayments] = useState<ApiPendingPayment[]>([])
+  const [incomingPayments, setIncomingPayments] = useState<ApiPendingPayment[]>(initialIncoming)
+  const [outgoingPayments, setOutgoingPayments] = useState<ApiPendingPayment[]>(initialOutgoing)
   // PWA Install Prompt State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
-  const [isBootstrapping, setIsBootstrapping] = useState(true)
+  const [isBootstrapping, setIsBootstrapping] = useState(!(cachedUser && initialActiveRoom && cachedRoomDetail))
+
+  const setActiveRoomId = (roomId: string | null) => {
+    setActiveRoomIdState(roomId)
+    setStoredActiveRoomId(roomId)
+  }
 
   function showToast(message: string) {
     setToast(message)
@@ -201,174 +286,8 @@ function App() {
     }
   }, [])
 
-  // 1. Initial auth check & room bootstrap (Atomic)
-  useEffect(() => {
-    let isMounted = true
-
-    const bootstrap = async () => {
-      try {
-        const session = await getCurrentUser()
-        if (!isMounted) return
-        setCurrentUser(session.user)
-
-        const roomsData = await listRooms().catch(() => ({ rooms: [] }))
-        if (!isMounted) return
-        setUserRooms(roomsData.rooms)
-
-        const activeRooms = roomsData.rooms.filter((r) => r.status === 'active')
-        if (activeRooms.length > 0) {
-          setActiveRoomId(activeRooms[0].roomId.publicId)
-          setIsLoadingRoom(true)
-        }
-        setAuthStatus('ready')
-      } catch {
-        if (isMounted) {
-          setAuthStatus('loggedOut')
-        }
-      } finally {
-        if (isMounted) {
-          setIsBootstrapping(false)
-        }
-      }
-    }
-
-    void bootstrap()
-    return () => {
-      isMounted = false
-    }
-  }, [])
-
-  // 3. Polling for pending approval when user has no active rooms but has pending ones
-  useEffect(() => {
-    if (authStatus !== 'ready' || !currentUser || activeRoomId) return
-    const hasPending = userRooms.some((r) => r.status === 'pending')
-    if (!hasPending) return
-
-    const timer = setInterval(() => {
-      void listRooms()
-        .then((result) => {
-          setUserRooms(result.rooms)
-          const activeRooms = result.rooms.filter((r) => r.status === 'active')
-          if (activeRooms.length > 0) {
-            setActiveRoomId(activeRooms[0].roomId.publicId)
-            showToast('Room approved! Welcome to the ledger.')
-          }
-        })
-        .catch(() => {})
-    }, 4000)
-
-    return () => clearInterval(timer)
-  }, [authStatus, currentUser, activeRoomId, userRooms])
-
-  // 4. Load active room details whenever activeRoomId changes
-  useEffect(() => {
-    if (!activeRoomId || !currentUser) return
-    let isMounted = true
-
-    const fetchAllRoomData = async () => {
-      setIsLoadingRoom(true)
-      try {
-        const [roomData, expenseData, balanceData, summaryData, activityData] = await Promise.all([
-          getRoom(activeRoomId),
-          listExpenses(activeRoomId),
-          getBalances(activeRoomId),
-          getSummary(activeRoomId),
-          getActivity(activeRoomId),
-        ])
-
-        if (!isMounted) return
-        setRoomContext({
-          id: roomData.room.publicId,
-          name: roomData.room.name,
-          recoveryQuestion: roomData.room.recoveryQuestion,
-          dissolveRequest: roomData.room.dissolveRequest,
-        })
-
-        const loadedMembers: RoomMember[] = roomData.members.map((m) => ({
-          id: m.userId._id,
-          membershipId: m._id,
-          name: m.userId.displayName,
-          role: m.role,
-          status: m.status,
-        }))
-        setRoomMembers(loadedMembers)
-
-        // Pending join requests
-        const currentMember = loadedMembers.find((m) => m.id === currentUser.id)
-        if (currentMember?.role === 'admin') {
-          try {
-            const reqs = await listJoinRequests(activeRoomId)
-            if (isMounted) {
-              setJoinRequests(reqs.requests.map((r) => ({ id: r._id, name: r.userId.displayName })))
-            }
-          } catch {
-            if (isMounted) setJoinRequests([])
-          }
-        } else {
-          setJoinRequests([])
-        }
-
-        // Pending payment settlements
-        const allPendingPayments = balanceData.pendingPayments || []
-        const incoming = allPendingPayments.filter((p) => {
-          const toId = typeof p.toUserId === 'object' && p.toUserId !== null ? p.toUserId._id : String(p.toUserId)
-          return toId === currentUser.id
-        })
-        const outgoing = allPendingPayments.filter((p) => {
-          const fromId = typeof p.fromUserId === 'object' && p.fromUserId !== null ? p.fromUserId._id : String(p.fromUserId)
-          return fromId === currentUser.id
-        })
-        setIncomingPayments(incoming)
-        setOutgoingPayments(outgoing)
-
-        // Member names map
-        const memberNameMap = new Map(loadedMembers.map((m) => [m.id, m.name]))
-
-        // Balances & Suggestions
-        const outSuggestions = balanceData.suggestions.filter((s) => s.fromUserId === currentUser.id)
-        const inSuggestions = balanceData.suggestions.filter((s) => s.toUserId === currentUser.id)
-
-        const mappedNeedToPay: PaymentRow[] = outSuggestions.map((s) => ({
-          id: s.toUserId,
-          name: memberNameMap.get(s.toUserId) ?? 'Roommate',
-          amount: s.amountPaise / 100,
-        }))
-
-        const mappedNeedToReceive: PaymentRow[] = inSuggestions.map((s) => ({
-          id: s.fromUserId,
-          name: memberNameMap.get(s.fromUserId) ?? 'Roommate',
-          amount: s.amountPaise / 100,
-        }))
-
-        setNeedToPay(mappedNeedToPay)
-        setNeedToReceive(mappedNeedToReceive)
-
-        if (mappedNeedToPay.length > 0) {
-          setPaymentTarget(mappedNeedToPay[0])
-        } else {
-          setPaymentTarget(null)
-        }
-
-        // Expenses (exclude voided)
-        const validExpenses = expenseData.expenses.filter((e) => !e.voidedAt).map(toUiExpense)
-        setExpenses(validExpenses)
-
-        setSummary(summaryData)
-        setActivity(activityData.events)
-      } catch {
-        if (isMounted) showToast('Failed to load room details.')
-      } finally {
-        if (isMounted) setIsLoadingRoom(false)
-      }
-    }
-
-    void fetchAllRoomData()
-    return () => {
-      isMounted = false
-    }
-  }, [activeRoomId, currentUser])
-
-  const refreshRoomData = async () => {
+  // Unified refresh & load room data (reads from offline cache instantly and background updates)
+  const refreshRoomData = useCallback(async () => {
     if (!activeRoomId || !currentUser) return
     try {
       const [roomData, expenseData, balanceData, summaryData, activityData] = await Promise.all([
@@ -442,9 +361,114 @@ function App() {
         setJoinRequests(reqs.requests.map((r) => ({ id: r._id, name: r.userId.displayName })))
       }
     } catch {
-      showToast('Could not refresh room data.')
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        showToast('Could not refresh room data.')
+      }
     }
-  }
+  }, [activeRoomId, currentUser])
+
+  // 1. Initial auth check & room bootstrap (Atomic & Offline-resilient)
+  useEffect(() => {
+    let isMounted = true
+
+    const bootstrap = async () => {
+      try {
+        const session = await getCurrentUser()
+        if (!isMounted) return
+        setCurrentUser(session.user)
+
+        const cached = getCached<ApiRoomMembership[]>('finlit_cache_rooms') || []
+        const roomsData = await listRooms().catch(() => ({ rooms: cached }))
+        if (!isMounted) return
+        setUserRooms(roomsData.rooms)
+
+        const activeRooms = roomsData.rooms.filter((r) => r.status === 'active')
+        if (activeRooms.length > 0) {
+          const stored = getStoredActiveRoomId()
+          const validStored = stored && activeRooms.some((r) => r.roomId?.publicId === stored)
+          const target = validStored ? stored : activeRooms[0].roomId.publicId
+          setActiveRoomId(target)
+        }
+        setAuthStatus('ready')
+      } catch (err: unknown) {
+        if (!isMounted) return
+        const isAuthError = err instanceof ApiError && err.code === 'UNAUTHENTICATED'
+        if (isAuthError) {
+          setAuthStatus('loggedOut')
+          setCurrentUser(null)
+          setStoredToken(null)
+          setActiveRoomId(null)
+        } else {
+          // If offline / network error / temporary rate limit, preserve cached session!
+          const cachedUserObj = getCached<CurrentUser>('finlit_cache_user')
+          if (cachedUserObj && (getStoredToken() || document.cookie.includes('session'))) {
+            setCurrentUser(cachedUserObj)
+            setAuthStatus('ready')
+          } else {
+            setAuthStatus('loggedOut')
+          }
+        }
+      } finally {
+        if (isMounted) {
+          setIsBootstrapping(false)
+        }
+      }
+    }
+
+    void bootstrap()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  // 2. Background sync completion & online reconnection listener
+  useEffect(() => {
+    const handleSync = () => {
+      void refreshRoomData()
+    }
+    window.addEventListener('finlit:sync_complete', handleSync)
+    window.addEventListener('online', handleSync)
+    return () => {
+      window.removeEventListener('finlit:sync_complete', handleSync)
+      window.removeEventListener('online', handleSync)
+    }
+  }, [refreshRoomData])
+
+  // 3. Polling for pending approval when user has no active rooms but has pending ones
+  useEffect(() => {
+    if (authStatus !== 'ready' || !currentUser || activeRoomId) return
+    const hasPending = userRooms.some((r) => r.status === 'pending')
+    if (!hasPending) return
+
+    const timer = setInterval(() => {
+      void listRooms()
+        .then((result) => {
+          setUserRooms(result.rooms)
+          const activeRooms = result.rooms.filter((r) => r.status === 'active')
+          if (activeRooms.length > 0) {
+            setActiveRoomId(activeRooms[0].roomId.publicId)
+            showToast('Room approved! Welcome to the ledger.')
+          }
+        })
+        .catch(() => {})
+    }, 4000)
+
+    return () => clearInterval(timer)
+  }, [authStatus, currentUser, activeRoomId, userRooms])
+
+  // 4. Load active room details whenever activeRoomId changes
+  useEffect(() => {
+    if (!activeRoomId || !currentUser) return
+    let isMounted = true
+
+    void refreshRoomData().finally(() => {
+      if (isMounted) setIsLoadingRoom(false)
+    })
+
+    return () => {
+      isMounted = false
+    }
+  }, [activeRoomId, currentUser, refreshRoomData])
 
   const handleManualCheckApproval = async () => {
     setIsCheckingApproval(true)
@@ -765,7 +789,7 @@ function App() {
   }
 
   // 1. Initial Loading State
-  if (authStatus === 'checking' || isBootstrapping || (isLoadingRoom && activeRoomId && !roomContext)) {
+  if (authStatus === 'checking' || isBootstrapping || (activeRoomId && !roomContext)) {
     return (
       <div className="modern-splash">
         <div className="modern-splash-card">
@@ -789,7 +813,7 @@ function App() {
   }
 
   // 3. User is logged in but has no active rooms
-  if (!roomContext && !isLoadingRoom) {
+  if (!activeRoomId && !roomContext) {
     const pendingMemberships = userRooms.filter((r) => r.status === 'pending')
 
     if (pendingMemberships.length > 0) {
